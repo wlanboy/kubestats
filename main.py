@@ -33,6 +33,8 @@ app = typer.Typer(
 )
 console = Console()
 
+VERSION = "0.1.0"
+
 
 class OutputFormat(str, Enum):
     table = "table"
@@ -48,9 +50,17 @@ class CliTool(str, Enum):
 @dataclass
 class _State:
     tool: CliTool = field(default=CliTool.kubectl)
+    kubeconfig: Optional[str] = field(default=None)
+    context: Optional[str] = field(default=None)
 
 
 _state = _State()
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"kubestats {VERSION}")
+        raise typer.Exit()
 
 
 @app.callback()
@@ -59,8 +69,25 @@ def _global_options(
         "--tool", "-t",
         help="CLI backend to use: kubectl (default) or oc (OpenShift).",
     )] = CliTool.kubectl,
+    kubeconfig: Annotated[Optional[str], typer.Option(
+        "--kubeconfig",
+        help="Path to kubeconfig file. Defaults to ~/.kube/config.",
+        envvar="KUBECONFIG",
+    )] = None,
+    context: Annotated[Optional[str], typer.Option(
+        "--context",
+        help="Kubeconfig context to use. Defaults to the current context.",
+    )] = None,
+    version: Annotated[Optional[bool], typer.Option(
+        "--version", "-V",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show version and exit.",
+    )] = None,
 ) -> None:
     _state.tool = tool
+    _state.kubeconfig = kubeconfig
+    _state.context = context
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +96,7 @@ def _global_options(
 
 def _bootstrap() -> None:
     try:
-        kubectl.load_config()
+        kubectl.load_config(kubeconfig=_state.kubeconfig, context=_state.context)
         kubectl.set_backend(_state.tool.value)
     except Exception as e:
         console.print(f"[red]Cannot load kubeconfig:[/red] {e}")
@@ -104,16 +131,23 @@ def _render(data, fmt: OutputFormat, name: str, output_dir: Optional[Path],
 @app.command()
 def crds(
     namespace: Annotated[Optional[str], typer.Option(
-        "--namespace", "-n", help="Limit to one namespace")] = None,
+        "--namespace", "-n",
+        help="Limit to one namespace.")] = None,
     breakdown: Annotated[bool, typer.Option(
-        "--breakdown", help="Also show per-namespace instance matrix")] = False,
+        "--breakdown",
+        help="Also show per-namespace instance matrix (table output only).")] = False,
     output: Annotated[OutputFormat, typer.Option(
-        "--output", "-o")] = OutputFormat.table,
+        "--output", "-o",
+        help="Output format: table (default), json, or csv.")] = OutputFormat.table,
     output_dir: Annotated[Optional[Path], typer.Option(
-        "--output-dir")] = None,
+        "--output-dir",
+        help="Write output file(s) to this directory instead of stdout.")] = None,
 ) -> None:
     """CRD adoption rate across namespaces."""
     _bootstrap()
+
+    if breakdown and output != OutputFormat.table:
+        console.print("[yellow]Warning: --breakdown is only supported with --output table, ignoring.[/yellow]")
 
     namespaces = kubectl.get_namespaces()
     ns_names = [namespace] if namespace else [ns.name for ns in namespaces]
@@ -139,11 +173,14 @@ def crds(
 @app.command()
 def adoption(
     namespace: Annotated[Optional[str], typer.Option(
-        "--namespace", "-n")] = None,
+        "--namespace", "-n",
+        help="Limit to one namespace.")] = None,
     output: Annotated[OutputFormat, typer.Option(
-        "--output", "-o")] = OutputFormat.table,
+        "--output", "-o",
+        help="Output format: table (default), json, or csv.")] = OutputFormat.table,
     output_dir: Annotated[Optional[Path], typer.Option(
-        "--output-dir")] = None,
+        "--output-dir",
+        help="Write output file(s) to this directory instead of stdout.")] = None,
 ) -> None:
     """Adoption rate metrics per namespace."""
     _bootstrap()
@@ -158,7 +195,7 @@ def adoption(
         stats, output, "adoption", output_dir,
         output_table.render_adoption,
         output_json.render_adoption,
-        lambda s: output_csv.render_adoption(s),
+        output_csv.render_adoption,
     )
 
 
@@ -169,17 +206,23 @@ def adoption(
 @app.command()
 def istio(
     traffic: Annotated[bool, typer.Option(
-        "--traffic", help="Show traffic policies (VS, DR, Gateways)")] = False,
+        "--traffic",
+        help="Show traffic policies (VirtualServices, DestinationRules, Gateways).")] = False,
     external: Annotated[bool, typer.Option(
-        "--external", help="Show external services (ServiceEntries)")] = False,
+        "--external",
+        help="Show external services (ServiceEntries).")] = False,
     policies: Annotated[bool, typer.Option(
-        "--policies", help="Show security policies (mTLS, AuthzPolicies)")] = False,
+        "--policies",
+        help="Show security policies (mTLS, AuthorizationPolicies).")] = False,
     namespace: Annotated[Optional[str], typer.Option(
-        "--namespace", "-n")] = None,
+        "--namespace", "-n",
+        help="Limit to one namespace.")] = None,
     output: Annotated[OutputFormat, typer.Option(
-        "--output", "-o")] = OutputFormat.table,
+        "--output", "-o",
+        help="Output format: table (default), json, or csv.")] = OutputFormat.table,
     output_dir: Annotated[Optional[Path], typer.Option(
-        "--output-dir")] = None,
+        "--output-dir",
+        help="Write output file(s) to this directory instead of stdout.")] = None,
 ) -> None:
     """Istio service mesh usage per namespace."""
     _bootstrap()
@@ -207,7 +250,7 @@ def istio(
             stats, output, "istio-traffic", output_dir,
             output_table.render_istio_traffic,
             output_json.render_istio,
-            output_csv.render_istio,
+            output_csv.render_istio_traffic,
         )
 
     if policies:
@@ -215,7 +258,7 @@ def istio(
             stats, output, "istio-policies", output_dir,
             output_table.render_istio_policies,
             output_json.render_istio,
-            output_csv.render_istio,
+            output_csv.render_istio_policies,
         )
 
     if external:
@@ -236,15 +279,32 @@ def istio(
 
 @app.command(name="all")
 def run_all(
+    namespace: Annotated[Optional[str], typer.Option(
+        "--namespace", "-n",
+        help="Limit to one namespace.")] = None,
+    breakdown: Annotated[bool, typer.Option(
+        "--breakdown",
+        help="Include per-namespace CRD instance matrix (table output only).")] = False,
     output: Annotated[OutputFormat, typer.Option(
-        "--output", "-o")] = OutputFormat.table,
+        "--output", "-o",
+        help="Output format: table (default), json, or csv.")] = OutputFormat.table,
     output_dir: Annotated[Optional[Path], typer.Option(
-        "--output-dir")] = None,
+        "--output-dir",
+        help="Write output file(s) to this directory. Required for --output csv.")] = None,
 ) -> None:
     """Run all reports sequentially."""
     _bootstrap()
 
+    if output == OutputFormat.csv and output_dir is None:
+        console.print("[red]--output-dir is required for --output csv with 'all'[/red]")
+        raise typer.Exit(1)
+
+    if breakdown and output != OutputFormat.table:
+        console.print("[yellow]Warning: --breakdown is only supported with --output table, ignoring.[/yellow]")
+
     namespaces = kubectl.get_namespaces()
+    if namespace:
+        namespaces = [ns for ns in namespaces if ns.name == namespace]
     ns_names = [ns.name for ns in namespaces]
     total_ns = len(ns_names)
 
@@ -279,23 +339,21 @@ def run_all(
         collect("[3/4] Istio stats",        "istio",   kubectl.get_istio_stats, namespaces)
         collect("[4/4] Service entries",    "entries", kubectl.get_service_entries, ns_names)
 
-    crd_stats     = results["crds"]
+    crd_stats      = results["crds"]
     adoption_stats = results["adoption"]
-    istio_stats   = results["istio"]
-    entries       = results["entries"]
+    istio_stats    = results["istio"]
+    entries        = results["entries"]
 
     # --- Render ---
     if output == OutputFormat.table:
-        _table_all(crd_stats, total_ns, adoption_stats, istio_stats, entries)
+        _table_all(crd_stats, total_ns, adoption_stats, istio_stats, entries, breakdown)
 
     elif output == OutputFormat.json:
         content = output_json.render_all(crd_stats, adoption_stats, istio_stats, entries)
         _emit(content, output, "all", output_dir)
 
-    else:  # csv — one file per report
-        if output_dir is None:
-            console.print("[red]--output-dir is required for CSV output with 'all'[/red]")
-            raise typer.Exit(1)
+    else:  # csv — one file per report (output_dir guaranteed by early check above)
+        assert output_dir is not None
         _csv_all(crd_stats, total_ns, adoption_stats, istio_stats, entries, output_dir)
 
     if output_dir and output != OutputFormat.table:
@@ -305,7 +363,8 @@ def run_all(
             console.print(f"  [green]{f.name}[/green]")
 
 
-def _table_all(crd_stats, total_ns, adoption_stats, istio_stats, entries) -> None:
+def _table_all(crd_stats, total_ns, adoption_stats, istio_stats, entries,
+               breakdown: bool) -> None:
     sections = [
         ("Custom Resource Adoption",    output_table.render_crds(crd_stats, total_ns)),
         ("Adoption Rate Metrics",       output_table.render_adoption(adoption_stats)),
@@ -319,6 +378,11 @@ def _table_all(crd_stats, total_ns, adoption_stats, istio_stats, entries) -> Non
         console.print(Rule(f"[bold]{title}[/bold]"))
         console.print(table)
 
+    if breakdown:
+        all_ns = sorted({ns for s in crd_stats for ns in s.instances_by_namespace})
+        console.print(Rule("[bold]CRD Instances per Namespace[/bold]"))
+        console.print(output_table.render_crds_per_namespace(crd_stats, all_ns))
+
 
 def _csv_all(crd_stats, total_ns, adoption_stats, istio_stats, entries,
              output_dir: Path) -> None:
@@ -327,8 +391,8 @@ def _csv_all(crd_stats, total_ns, adoption_stats, istio_stats, entries,
         "crds":           output_csv.render_crds(crd_stats, total_ns),
         "adoption":       output_csv.render_adoption(adoption_stats),
         "istio":          output_csv.render_istio(istio_stats),
-        "istio-traffic":  output_csv.render_istio(istio_stats),
-        "istio-policies": output_csv.render_istio(istio_stats),
+        "istio-traffic":  output_csv.render_istio_traffic(istio_stats),
+        "istio-policies": output_csv.render_istio_policies(istio_stats),
         "istio-external": output_csv.render_service_entries(entries),
     }
     for name, content in files.items():
