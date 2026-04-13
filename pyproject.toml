@@ -1,7 +1,7 @@
 [project]
 name = "kubestats"
 version = "0.1.0"
-description = "Python tui to get stats of crd usage in kubernets clusters"
+description = "CLI analytics for Kubernetes / OpenShift clusters: CRD adoption, resource limits, GitOps tooling, and Istio service-mesh usage — per namespace."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
