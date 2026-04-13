@@ -59,9 +59,7 @@ def render_crds_per_namespace(stats: list[CRDStat],
     )
     table.add_column("NAMESPACE", style="cyan", no_wrap=True)
     for s in stats:
-        # Shorten to last two dot-segments for readability
-        label = ".".join(s.name.split(".")[:2])
-        table.add_column(label, justify="right")
+        table.add_column(s.kind, justify="right")
 
     for ns in namespace_names:
         row = [ns] + [str(s.instances_by_namespace.get(ns, 0)) for s in stats]
