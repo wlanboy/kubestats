@@ -59,6 +59,27 @@ def render_istio(stats: list[IstioNamespaceStat]) -> str:
     return buf.getvalue()
 
 
+def render_istio_traffic(stats: list[IstioNamespaceStat]) -> str:
+    fields = [
+        "namespace", "virtual_services", "destination_rules",
+        "gateways", "service_entries", "workload_entries",
+    ]
+    buf, writer = _buf(fields)
+    for s in stats:
+        writer.writerow(asdict(s))
+    return buf.getvalue()
+
+
+def render_istio_policies(stats: list[IstioNamespaceStat]) -> str:
+    fields = [
+        "namespace", "peer_authentications", "authorization_policies", "mtls_mode",
+    ]
+    buf, writer = _buf(fields)
+    for s in stats:
+        writer.writerow(asdict(s))
+    return buf.getvalue()
+
+
 def render_service_entries(entries: list[ServiceEntryStat]) -> str:
     fields = ["namespace", "name", "hosts", "resolution", "ports"]
     buf, writer = _buf(fields)
