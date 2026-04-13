@@ -26,12 +26,17 @@ def set_backend(backend: str) -> None:
 # Bootstrap
 # ---------------------------------------------------------------------------
 
-def load_config() -> None:
-    """Load kubeconfig (in-cluster first, then local ~/.kube/config)."""
+def load_config(kubeconfig: str | None = None, context: str | None = None) -> None:
+    """Load kubeconfig (in-cluster first, then local ~/.kube/config).
+
+    Args:
+        kubeconfig: Path to a kubeconfig file. Defaults to ~/.kube/config.
+        context:    Kubeconfig context to activate. Defaults to the current context.
+    """
     try:
         config.load_incluster_config()
     except config.ConfigException:
-        config.load_kube_config()
+        config.load_kube_config(config_file=kubeconfig, context=context)
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +216,7 @@ def _count_custom(custom: client.CustomObjectsApi, group: str, versions: list[st
 def get_adoption_stats(namespace_names: list[str]) -> list[AdoptionStat]:
     v1 = client.CoreV1Api()
     apps_v1 = client.AppsV1Api()
-    autoscaling = client.AutoscalingV1Api()
+    autoscaling = client.AutoscalingV2Api()
     networking = client.NetworkingV1Api()
     custom = client.CustomObjectsApi()
 
