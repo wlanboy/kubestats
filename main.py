@@ -249,7 +249,7 @@ def istio(
         _render(
             stats, output, "istio-traffic", output_dir,
             output_table.render_istio_traffic,
-            output_json.render_istio,
+            output_json.render_istio_traffic,
             output_csv.render_istio_traffic,
         )
 
@@ -257,7 +257,7 @@ def istio(
         _render(
             stats, output, "istio-policies", output_dir,
             output_table.render_istio_policies,
-            output_json.render_istio,
+            output_json.render_istio_policies,
             output_csv.render_istio_policies,
         )
 
