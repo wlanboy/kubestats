@@ -21,10 +21,10 @@ OpenShift clusters expose the full Kubernetes API in addition to their own exten
 
 ```bash
 # Kubernetes cluster
-analytics adoption
+uv run analytics adoption
 
 # OpenShift cluster
-analytics --tool oc adoption
+uv run analytics --tool oc adoption
 ```
 
 ---
@@ -38,8 +38,8 @@ analytics --tool oc adoption
 The `--tool` flag must come **before** the sub-command:
 
 ```bash
-analytics --tool oc crds --breakdown
-analytics --tool oc all --output json --output-dir ./reports/
+uv run analytics --tool oc crds --breakdown
+uv run analytics --tool oc all --output json --output-dir ./reports/
 ```
 
 ---
@@ -51,7 +51,7 @@ analytics --tool oc all --output json --output-dir ./reports/
 CRD adoption rate — how many instances of each CRD exist across which namespaces.
 
 ```bash
-analytics crds [--namespace NS] [--breakdown] [--output table|json|csv] [--output-dir DIR]
+uv run analytics crds [--namespace NS] [--breakdown] [--output table|json|csv] [--output-dir DIR]
 ```
 
 Output (`--output table`):
@@ -82,16 +82,16 @@ With `--breakdown`, a second table shows the raw instance count per namespace ×
 
 ```bash
 # All namespaces
-analytics crds
+uv run analytics crds
 
 # One namespace with breakdown
-analytics crds --namespace platform --breakdown
+uv run analytics crds --namespace platform --breakdown
 
 # Export as JSON
-analytics crds --output json > crds.json
+uv run analytics crds --output json > crds.json
 
 # OpenShift — same flags, uses Projects as namespace source
-analytics --tool oc crds --breakdown
+uv run analytics --tool oc crds --breakdown
 ```
 
 ---
@@ -101,7 +101,7 @@ analytics --tool oc crds --breakdown
 Per-namespace adoption metrics — raw counts for key platform capabilities.
 
 ```bash
-analytics adoption [--namespace NS] [--output table|json|csv] [--output-dir DIR]
+uv run analytics adoption [--namespace NS] [--output table|json|csv] [--output-dir DIR]
 ```
 
 **Standard output (`kubectl`):**
@@ -141,13 +141,13 @@ The `ROUTES` and `DC` columns are **only shown when at least one namespace has d
 
 ```bash
 # Kubernetes
-analytics adoption --namespace team-alpha
+uv run analytics adoption --namespace team-alpha
 
 # OpenShift — with Routes and DeploymentConfig counts
-analytics --tool oc adoption
+uv run analytics --tool oc adoption
 
 # Export to CSV (includes route_count and deploymentconfig_count columns)
-analytics --tool oc adoption --output csv > adoption.csv
+uv run analytics --tool oc adoption --output csv > adoption.csv
 ```
 
 ---
@@ -157,7 +157,7 @@ analytics --tool oc adoption --output csv > adoption.csv
 Istio service mesh usage. Without flags, shows namespace enrollment. Flags can be combined.
 
 ```bash
-analytics istio [--traffic] [--external] [--policies]
+uv run analytics istio [--traffic] [--external] [--policies]
                 [--namespace NS] [--output table|json|csv] [--output-dir DIR]
 ```
 
@@ -214,16 +214,16 @@ ServiceEntries register external services into the mesh — databases, third-par
 
 ```bash
 # Enrollment overview
-analytics istio
+uv run analytics istio
 
 # Combined: traffic and security policies
-analytics istio --traffic --policies
+uv run analytics istio --traffic --policies
 
 # External services only, export CSV
-analytics istio --external --output csv > external-services.csv
+uv run analytics istio --external --output csv > external-services.csv
 
 # OpenShift — same flags, identical output
-analytics --tool oc istio --traffic
+uv run analytics --tool oc istio --traffic
 ```
 
 ---
@@ -233,7 +233,7 @@ analytics --tool oc istio --traffic
 Runs all reports sequentially. Collects data first (4 steps), then renders all 6 sections.
 
 ```bash
-analytics all [--output table|json|csv] [--output-dir DIR]
+uv run analytics all [--namespace NS] [--breakdown] [--output table|json|csv] [--output-dir DIR]
 ```
 
 ```text
@@ -264,21 +264,21 @@ In OpenShift mode the header shows `oc analytics`:
 For CSV output, `--output-dir` is required — one file per report:
 
 ```bash
-analytics all --output csv --output-dir ./reports/
+uv run analytics all --output csv --output-dir ./reports/
 # writes: crds.csv, adoption.csv, istio.csv,
 #         istio-traffic.csv, istio-policies.csv, istio-external.csv
 
 # OpenShift — adoption.csv includes route_count and deploymentconfig_count
-analytics --tool oc all --output csv --output-dir ./reports/
+uv run analytics --tool oc all --output csv --output-dir ./reports/
 ```
 
 For JSON output, a single combined file is written when `--output-dir` is given, or streamed to stdout:
 
 ```bash
-analytics all --output json --output-dir ./reports/
+uv run analytics all --output json --output-dir ./reports/
 # writes: all.json  (keys: crds, adoption, istio, service_entries)
 
-analytics --tool oc all --output json > cluster-report.json
+uv run analytics --tool oc all --output json > cluster-report.json
 ```
 
 ---
@@ -293,13 +293,13 @@ All commands support `--output table|json|csv`.
 
 ```bash
 # stream CSV to stdout
-analytics istio --external --output csv > external-services.csv
+uv run analytics istio --external --output csv > external-services.csv
 
 # write to directory
-analytics crds --output json --output-dir ./out/
+uv run analytics crds --output json --output-dir ./out/
 
 # OpenShift full export
-analytics --tool oc all --output csv --output-dir ./openshift-report/
+uv run analytics --tool oc all --output csv --output-dir ./openshift-report/
 ```
 
 ---
@@ -341,7 +341,7 @@ source .venv/bin/activate
 analytics --help
 
 # OpenShift usage
-analytics --tool oc --help
+uv run analytics --tool oc --help
 ```
 
 ---
@@ -361,7 +361,7 @@ uv run pyright
 # linting
 uv run ruff check
 
-# run without installing
-uv run python main.py --help
-uv run python main.py --tool oc adoption
+# run
+uv run analytics --help
+uv run analytics --tool oc adoption
 ```
