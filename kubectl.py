@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import Any, cast
 
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
@@ -116,10 +117,10 @@ def get_namespaces() -> list[NamespaceInfo]:
     if _backend == "oc":
         custom = client.CustomObjectsApi()
         try:
-            result = custom.list_cluster_custom_object(
+            result = cast(dict[str, Any], custom.list_cluster_custom_object(
                 group="project.openshift.io", version="v1", plural="projects"
-            )
-            items = result.get("items", [])
+            ))
+            items: list[Any] = result.get("items", [])
             if items:
                 return [
                     NamespaceInfo(
@@ -134,7 +135,7 @@ def get_namespaces() -> list[NamespaceInfo]:
     v1 = client.CoreV1Api()
     return [
         NamespaceInfo(name=ns.metadata.name, labels=ns.metadata.labels or {})
-        for ns in v1.list_namespace().items
+        for ns in cast(Any, v1.list_namespace()).items
     ]
 
 
@@ -149,14 +150,31 @@ def _storage_version(crd) -> str:
     return crd.spec.versions[0].name if crd.spec.versions else "v1"
 
 
-def get_crd_stats(namespace_names: list[str]) -> list[CRDStat]:
+def get_crd_stats(
+    namespace_names: list[str],
+    *,
+    include_empty: bool = False,
+    search: str | None = None,
+    group_filter: str | None = None,
+) -> list[CRDStat]:
     ext = client.ApiextensionsV1Api()
     custom = client.CustomObjectsApi()
 
     stats: list[CRDStat] = []
+    search_lower = search.lower() if search else None
+    group_lower = group_filter.lower() if group_filter else None
 
-    for crd in ext.list_custom_resource_definition().items:
+    for crd in cast(Any, ext.list_custom_resource_definition()).items:
         spec = crd.spec
+
+        if group_lower and group_lower not in spec.group.lower():
+            continue
+        if search_lower and not any(
+            search_lower in s.lower()
+            for s in [crd.metadata.name, spec.names.kind, spec.group]
+        ):
+            continue
+
         version = _storage_version(crd)
         stat = CRDStat(
             name=crd.metadata.name,
@@ -169,10 +187,10 @@ def get_crd_stats(namespace_names: list[str]) -> list[CRDStat]:
         if stat.namespaced:
             for ns in namespace_names:
                 try:
-                    result = custom.list_namespaced_custom_object(
+                    result = cast(dict[str, Any], custom.list_namespaced_custom_object(
                         group=spec.group, version=version,
                         namespace=ns, plural=spec.names.plural,
-                    )
+                    ))
                     count = len(result.get("items", []))
                     if count:
                         stat.instances_by_namespace[ns] = count
@@ -180,16 +198,16 @@ def get_crd_stats(namespace_names: list[str]) -> list[CRDStat]:
                     pass
         else:
             try:
-                result = custom.list_cluster_custom_object(
+                result = cast(dict[str, Any], custom.list_cluster_custom_object(
                     group=spec.group, version=version, plural=spec.names.plural,
-                )
+                ))
                 count = len(result.get("items", []))
                 if count:
                     stat.instances_by_namespace["(cluster)"] = count
             except ApiException:
                 pass
 
-        if stat.total_instances > 0:
+        if include_empty or stat.total_instances > 0:
             stats.append(stat)
 
     return sorted(stats, key=lambda s: s.total_instances, reverse=True)
@@ -203,9 +221,9 @@ def _count_custom(custom: client.CustomObjectsApi, group: str, versions: list[st
                   namespace: str, plural: str) -> int:
     for version in versions:
         try:
-            result = custom.list_namespaced_custom_object(
+            result = cast(dict[str, Any], custom.list_namespaced_custom_object(
                 group=group, version=version, namespace=namespace, plural=plural,
-            )
+            ))
             return len(result.get("items", []))
         except ApiException as e:
             if e.status == 404:
@@ -229,7 +247,7 @@ def get_adoption_stats(namespace_names: list[str]) -> list[AdoptionStat]:
 
     for ns in namespace_names:
         try:
-            pods = v1.list_namespaced_pod(namespace=ns).items
+            pods: list[Any] = cast(Any, v1.list_namespaced_pod(namespace=ns)).items
             pod_count = len(pods)
             pods_with_limits = sum(
                 1 for pod in pods
@@ -241,23 +259,23 @@ def get_adoption_stats(namespace_names: list[str]) -> list[AdoptionStat]:
                 )
             )
 
-            net_policies = networking.list_namespaced_network_policy(namespace=ns).items
+            net_policies: list[Any] = cast(Any, networking.list_namespaced_network_policy(namespace=ns)).items
             has_network_policy = bool(net_policies)
 
-            deployments = apps_v1.list_namespaced_deployment(namespace=ns).items
+            deployments: list[Any] = cast(Any, apps_v1.list_namespaced_deployment(namespace=ns)).items
             deployment_count = len(deployments)
             deployment_names = {d.metadata.name for d in deployments}
 
             pdb_count = 0
             if policy:
                 try:
-                    pdb_count = len(
-                        policy.list_namespaced_pod_disruption_budget(namespace=ns).items
-                    )
+                    pdb_count = len(cast(Any,
+                        policy.list_namespaced_pod_disruption_budget(namespace=ns)
+                    ).items)
                 except ApiException:
                     pass
 
-            hpas = autoscaling.list_namespaced_horizontal_pod_autoscaler(namespace=ns).items
+            hpas: list[Any] = cast(Any, autoscaling.list_namespaced_horizontal_pod_autoscaler(namespace=ns)).items
             hpa_targets = {h.spec.scale_target_ref.name for h in hpas}
             hpa_count = len(hpa_targets & deployment_names)
 
@@ -314,18 +332,18 @@ def _istio_count(custom: client.CustomObjectsApi, group: str,
 def _mtls_mode(custom: client.CustomObjectsApi, namespace: str) -> str:
     for version in ["v1", "v1beta1"]:
         try:
-            result = custom.list_namespaced_custom_object(
+            result = cast(dict[str, Any], custom.list_namespaced_custom_object(
                 group="security.istio.io", version=version,
                 namespace=namespace, plural="peerauthentications",
-            )
-            items = result.get("items", [])
-            if not items:
+            ))
+            mtls_items: list[dict[str, Any]] = result.get("items", [])
+            if not mtls_items:
                 return "none"
             # Prefer the namespace-wide policy (no workload selector)
-            for item in items:
+            for item in mtls_items:
                 if not item.get("spec", {}).get("selector"):
                     return item.get("spec", {}).get("mtls", {}).get("mode", "none")
-            return items[0].get("spec", {}).get("mtls", {}).get("mode", "none")
+            return mtls_items[0].get("spec", {}).get("mtls", {}).get("mode", "none")
         except ApiException as e:
             if e.status == 404:
                 continue
@@ -342,7 +360,7 @@ def get_istio_stats(namespace_infos: list[NamespaceInfo]) -> list[IstioNamespace
         injection_enabled = ns_info.labels.get("istio-injection") == "enabled"
 
         try:
-            pods = v1.list_namespaced_pod(namespace=ns).items
+            pods: list[Any] = cast(Any, v1.list_namespaced_pod(namespace=ns)).items
         except ApiException:
             continue
 
@@ -388,10 +406,10 @@ def get_service_entries(namespace_names: list[str]) -> list[ServiceEntryStat]:
     for ns in namespace_names:
         for version in ["v1", "v1beta1", "v1alpha3"]:
             try:
-                result = custom.list_namespaced_custom_object(
+                result = cast(dict[str, Any], custom.list_namespaced_custom_object(
                     group="networking.istio.io", version=version,
                     namespace=ns, plural="serviceentries",
-                )
+                ))
                 for item in result.get("items", []):
                     spec = item.get("spec", {})
                     ports = [
