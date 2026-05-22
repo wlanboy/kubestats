@@ -35,8 +35,10 @@ def render_crds(stats: list[CRDStat], total_namespaces: int) -> str:
 
 def render_adoption(stats: list[AdoptionStat]) -> str:
     fields = [
-        "namespace", "pod_count", "pods_with_limits", "has_network_policy",
-        "deployment_count", "pdb_count", "hpa_count",
+        "namespace", "pod_count", "pods_with_limits", "pods_with_probes",
+        "has_network_policy", "has_resource_quota", "has_limit_range",
+        "deployment_count", "statefulset_count", "ingress_count",
+        "pdb_count", "hpa_count", "vpa_count",
         "flux_resources", "argocd_resources",
         "route_count", "deploymentconfig_count",
     ]

@@ -73,10 +73,16 @@ class AdoptionStat:
     namespace: str
     pod_count: int
     pods_with_limits: int
+    pods_with_probes: int
     has_network_policy: bool
+    has_resource_quota: bool
+    has_limit_range: bool
     deployment_count: int
+    statefulset_count: int
+    ingress_count: int
     pdb_count: int
     hpa_count: int
+    vpa_count: int
     flux_resources: int     # HelmReleases + Kustomizations
     argocd_resources: int   # Applications
     route_count: int = 0              # OpenShift Routes
@@ -258,13 +264,32 @@ def get_adoption_stats(namespace_names: list[str]) -> list[AdoptionStat]:
                     for c in pod.spec.containers
                 )
             )
+            pods_with_probes = sum(
+                1 for pod in pods
+                if all(
+                    c.liveness_probe and c.readiness_probe
+                    for c in pod.spec.containers
+                )
+            )
 
             net_policies: list[Any] = cast(Any, networking.list_namespaced_network_policy(namespace=ns)).items
             has_network_policy = bool(net_policies)
 
+            quotas: list[Any] = cast(Any, v1.list_namespaced_resource_quota(namespace=ns)).items
+            has_resource_quota = bool(quotas)
+
+            limit_ranges: list[Any] = cast(Any, v1.list_namespaced_limit_range(namespace=ns)).items
+            has_limit_range = bool(limit_ranges)
+
             deployments: list[Any] = cast(Any, apps_v1.list_namespaced_deployment(namespace=ns)).items
             deployment_count = len(deployments)
             deployment_names = {d.metadata.name for d in deployments}
+
+            statefulsets: list[Any] = cast(Any, apps_v1.list_namespaced_stateful_set(namespace=ns)).items
+            statefulset_count = len(statefulsets)
+
+            ingresses: list[Any] = cast(Any, networking.list_namespaced_ingress(namespace=ns)).items
+            ingress_count = len(ingresses)
 
             pdb_count = 0
             if policy:
@@ -278,6 +303,10 @@ def get_adoption_stats(namespace_names: list[str]) -> list[AdoptionStat]:
             hpas: list[Any] = cast(Any, autoscaling.list_namespaced_horizontal_pod_autoscaler(namespace=ns)).items
             hpa_targets = {h.spec.scale_target_ref.name for h in hpas}
             hpa_count = len(hpa_targets & deployment_names)
+
+            vpa_count = _count_custom(
+                custom, "autoscaling.k8s.io", ["v1"], ns, "verticalpodautoscalers"
+            )
 
             flux_count = (
                 _count_custom(custom, "helm.toolkit.fluxcd.io",
@@ -304,10 +333,16 @@ def get_adoption_stats(namespace_names: list[str]) -> list[AdoptionStat]:
                 namespace=ns,
                 pod_count=pod_count,
                 pods_with_limits=pods_with_limits,
+                pods_with_probes=pods_with_probes,
                 has_network_policy=has_network_policy,
+                has_resource_quota=has_resource_quota,
+                has_limit_range=has_limit_range,
                 deployment_count=deployment_count,
+                statefulset_count=statefulset_count,
+                ingress_count=ingress_count,
                 pdb_count=pdb_count,
                 hpa_count=hpa_count,
+                vpa_count=vpa_count,
                 flux_resources=flux_count,
                 argocd_resources=argocd_count,
                 route_count=route_count,

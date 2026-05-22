@@ -82,10 +82,16 @@ def render_adoption(stats: list[AdoptionStat]) -> Table:
     table.add_column("NAMESPACE", style="cyan", no_wrap=True)
     table.add_column("PODS", justify="right")
     table.add_column("LIMITS", justify="right")
+    table.add_column("PROBES", justify="right")
     table.add_column("NETPOL", justify="center")
+    table.add_column("QUOTA", justify="center")
+    table.add_column("LIMITRANGE", justify="center")
     table.add_column("DEPLOYS", justify="right")
+    table.add_column("STS", justify="right")
+    table.add_column("INGRESS", justify="right")
     table.add_column("PDB", justify="right")
     table.add_column("HPA", justify="right")
+    table.add_column("VPA", justify="right")
     table.add_column("FLUX", justify="right")
     table.add_column("ARGO", justify="right")
     if show_oc:
@@ -97,10 +103,16 @@ def render_adoption(stats: list[AdoptionStat]) -> Table:
             s.namespace,
             str(s.pod_count),
             f"{s.pods_with_limits}/{s.pod_count}",
+            f"{s.pods_with_probes}/{s.pod_count}",
             _yn(s.has_network_policy),
+            _yn(s.has_resource_quota),
+            _yn(s.has_limit_range),
             str(s.deployment_count),
+            str(s.statefulset_count),
+            str(s.ingress_count),
             str(s.pdb_count),
             str(s.hpa_count),
+            str(s.vpa_count),
             str(s.flux_resources),
             str(s.argocd_resources),
         ]
