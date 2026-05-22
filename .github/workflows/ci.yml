@@ -20,7 +20,6 @@ jobs:
       - name: Setup uv
         uses: astral-sh/setup-uv@v7
         with:
-          version: "latest"
           enable-cache: true # Beschleunigt die CI bei jedem weiteren Run enorm
 
       - name: Install dependencies
