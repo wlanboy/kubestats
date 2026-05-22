@@ -1,8 +1,9 @@
 """Tests for kubectl.py dataclass models and their computed properties."""
 from __future__ import annotations
 
+import pytest
 
-from kubectl import CRDStat, NamespaceInfo
+from kubectl import AdoptionStat, CRDStat, NamespaceInfo
 
 
 class TestCRDStatProperties:
@@ -37,3 +38,44 @@ class TestNamespaceInfo:
 
     def test_name(self, namespace_info: NamespaceInfo) -> None:
         assert namespace_info.name == "prod"
+
+
+class TestAdoptionStat:
+    def test_oc_fields_default_to_zero(self, adoption_stat: AdoptionStat) -> None:
+        assert adoption_stat.route_count == 0
+        assert adoption_stat.deploymentconfig_count == 0
+
+    def test_fixture_fields(self, adoption_stat: AdoptionStat) -> None:
+        assert adoption_stat.namespace == "default"
+        assert adoption_stat.pod_count == 10
+        assert adoption_stat.pods_with_limits == 7
+        assert adoption_stat.pods_with_probes == 5
+        assert adoption_stat.has_network_policy is True
+        assert adoption_stat.has_resource_quota is True
+        assert adoption_stat.has_limit_range is False
+        assert adoption_stat.deployment_count == 3
+        assert adoption_stat.statefulset_count == 1
+        assert adoption_stat.ingress_count == 2
+        assert adoption_stat.pvc_count == 3
+        assert adoption_stat.serviceaccount_count == 2
+        assert adoption_stat.pdb_count == 1
+        assert adoption_stat.hpa_count == 2
+        assert adoption_stat.vpa_count == 0
+        assert adoption_stat.flux_resources == 4
+        assert adoption_stat.argocd_resources == 1
+
+    def test_oc_fixture_fields(self, adoption_stat_oc: AdoptionStat) -> None:
+        assert adoption_stat_oc.route_count == 3
+        assert adoption_stat_oc.deploymentconfig_count == 2
+        assert adoption_stat_oc.has_network_policy is False
+        assert adoption_stat_oc.has_resource_quota is False
+        assert adoption_stat_oc.serviceaccount_count == 1
+
+    def test_probes_can_be_zero(self, adoption_stat_oc: AdoptionStat) -> None:
+        assert adoption_stat_oc.pods_with_probes == 5
+
+    def test_probes_cannot_exceed_pod_count(self, adoption_stat: AdoptionStat) -> None:
+        assert adoption_stat.pods_with_probes <= adoption_stat.pod_count
+
+    def test_limits_cannot_exceed_pod_count(self, adoption_stat: AdoptionStat) -> None:
+        assert adoption_stat.pods_with_limits <= adoption_stat.pod_count
