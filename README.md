@@ -31,15 +31,33 @@ uv run analytics --tool oc adoption
 
 ## Global Options
 
-```bash
---tool, -t  [kubectl|oc]   CLI backend to use (default: kubectl)
+```
+--tool, -t    [kubectl|oc]   CLI backend to use (default: kubectl)
+--kubeconfig  PATH           Path to kubeconfig file (default: ~/.kube/config, or $KUBECONFIG)
+--context     TEXT           Kubeconfig context to activate (default: current context)
+--version, -V                Print version and exit
 ```
 
-The `--tool` flag must come **before** the sub-command:
+All global flags must come **before** the sub-command:
 
 ```bash
-uv run analytics --tool oc crds --breakdown
-uv run analytics --tool oc all --output json --output-dir ./reports/
+# Switch to OpenShift backend
+uv run analytics --tool oc adoption
+
+# Use a specific kubeconfig file
+uv run analytics --kubeconfig ~/configs/prod.yaml crds
+
+# Use $KUBECONFIG environment variable
+KUBECONFIG=~/configs/prod.yaml uv run analytics crds
+
+# Activate a named context from your kubeconfig
+uv run analytics --context staging-eu-west adoption
+
+# Combine: explicit file + context
+uv run analytics --kubeconfig ~/configs/all.yaml --context prod-us-east all
+
+# Print version
+uv run analytics --version
 ```
 
 ---
@@ -51,7 +69,8 @@ uv run analytics --tool oc all --output json --output-dir ./reports/
 CRD adoption rate — how many instances of each CRD exist across which namespaces.
 
 ```bash
-uv run analytics crds [--namespace NS] [--breakdown] [--output table|json|csv] [--output-dir DIR]
+uv run analytics crds [--namespace NS] [--breakdown] [--search TEXT] [--group GROUP]
+                      [--all] [--output table|json|csv] [--output-dir DIR]
 ```
 
 Output (`--output table`):
@@ -81,14 +100,37 @@ With `--breakdown`, a second table shows the raw instance count per namespace ×
 **Examples:**
 
 ```bash
-# All namespaces
+# All namespaces, table output
 uv run analytics crds
 
-# One namespace with breakdown
-uv run analytics crds --namespace platform --breakdown
+# Limit to one namespace
+uv run analytics crds --namespace platform
+
+# Show per-namespace instance matrix below the summary table
+uv run analytics crds --breakdown
+
+# Filter by CRD name, kind, or group (case-insensitive substring)
+uv run analytics crds --search certificate
+uv run analytics crds -s helmrelease
+
+# Filter by API group
+uv run analytics crds --group cert-manager.io
+uv run analytics crds -g fluxcd.io
+
+# Include CRDs with zero instances (installed but unused)
+uv run analytics crds --all
+
+# Combine filters with breakdown
+uv run analytics crds --group istio.io --breakdown --namespace team-alpha
 
 # Export as JSON
 uv run analytics crds --output json > crds.json
+
+# Write JSON to a directory
+uv run analytics crds --output json --output-dir ./out/
+
+# Export as CSV
+uv run analytics crds --output csv > crds.csv
 
 # OpenShift — same flags, uses Projects as namespace source
 uv run analytics --tool oc crds --breakdown
@@ -140,14 +182,29 @@ The `ROUTES` and `DC` columns are **only shown when at least one namespace has d
 **Examples:**
 
 ```bash
-# Kubernetes
-uv run analytics adoption --namespace team-alpha
+# All namespaces
+uv run analytics adoption
 
-# OpenShift — with Routes and DeploymentConfig counts
+# Limit to one namespace
+uv run analytics adoption --namespace team-alpha
+uv run analytics adoption -n platform
+
+# Export as JSON to stdout
+uv run analytics adoption --output json
+uv run analytics adoption -o json > adoption.json
+
+# Export as CSV to stdout
+uv run analytics adoption --output csv > adoption.csv
+
+# Write output to a directory (file: adoption.json / adoption.csv)
+uv run analytics adoption --output json --output-dir ./out/
+uv run analytics adoption --output csv --output-dir ./out/
+
+# OpenShift — includes ROUTES and DC columns
 uv run analytics --tool oc adoption
 
-# Export to CSV (includes route_count and deploymentconfig_count columns)
-uv run analytics --tool oc adoption --output csv > adoption.csv
+# OpenShift — single namespace, CSV export
+uv run analytics --tool oc adoption --namespace team-alpha --output csv > adoption.csv
 ```
 
 ---
@@ -213,14 +270,36 @@ ServiceEntries register external services into the mesh — databases, third-par
 **Examples:**
 
 ```bash
-# Enrollment overview
+# Enrollment overview (default when no flag is given)
 uv run analytics istio
+
+# Limit to one namespace
+uv run analytics istio --namespace team-alpha
+uv run analytics istio -n platform
+
+# Traffic policies only
+uv run analytics istio --traffic
+
+# Security policies only
+uv run analytics istio --policies
+
+# External services (ServiceEntries) only
+uv run analytics istio --external
+
+# Combine flags — all three views at once
+uv run analytics istio --traffic --policies --external
 
 # Combined: traffic and security policies
 uv run analytics istio --traffic --policies
 
-# External services only, export CSV
+# Export enrollment as JSON
+uv run analytics istio --output json > istio.json
+
+# Export external services as CSV
 uv run analytics istio --external --output csv > external-services.csv
+
+# Write traffic policies to a directory (file: istio-traffic.csv)
+uv run analytics istio --traffic --output csv --output-dir ./out/
 
 # OpenShift — same flags, identical output
 uv run analytics --tool oc istio --traffic
@@ -261,23 +340,35 @@ In OpenShift mode the header shows `oc analytics`:
 ╰─────────────────────────────────────────────────╯
 ```
 
-For CSV output, `--output-dir` is required — one file per report:
+**Examples:**
 
 ```bash
+# All namespaces, table output (default)
+uv run analytics all
+
+# Limit to one namespace
+uv run analytics all --namespace platform
+uv run analytics all -n team-alpha
+
+# Include the per-namespace CRD instance matrix (table output only)
+uv run analytics all --breakdown
+
+# JSON — stream to stdout
+uv run analytics all --output json
+
+# JSON — write to directory (file: all.json, keys: crds, adoption, istio, service_entries)
+uv run analytics all --output json --output-dir ./reports/
+uv run analytics all -o json --output-dir ./reports/
+
+# CSV — --output-dir is required; writes one file per report:
+#   crds.csv, adoption.csv, istio.csv,
+#   istio-traffic.csv, istio-policies.csv, istio-external.csv
 uv run analytics all --output csv --output-dir ./reports/
-# writes: crds.csv, adoption.csv, istio.csv,
-#         istio-traffic.csv, istio-policies.csv, istio-external.csv
 
 # OpenShift — adoption.csv includes route_count and deploymentconfig_count
 uv run analytics --tool oc all --output csv --output-dir ./reports/
-```
 
-For JSON output, a single combined file is written when `--output-dir` is given, or streamed to stdout:
-
-```bash
-uv run analytics all --output json --output-dir ./reports/
-# writes: all.json  (keys: crds, adoption, istio, service_entries)
-
+# OpenShift — stream combined JSON report
 uv run analytics --tool oc all --output json > cluster-report.json
 ```
 
