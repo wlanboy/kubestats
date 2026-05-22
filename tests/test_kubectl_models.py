@@ -1,7 +1,6 @@
 """Tests for kubectl.py dataclass models and their computed properties."""
 from __future__ import annotations
 
-import pytest
 
 from kubectl import AdoptionStat, CRDStat, NamespaceInfo
 

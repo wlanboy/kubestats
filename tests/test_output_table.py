@@ -128,14 +128,14 @@ class TestRenderAdoption:
         result = output_table.render_adoption([adoption_stat])
         headers = [c.header for c in result.columns]
         idx = headers.index("QUOTA")
-        assert "yes" in result.columns[idx]._cells[0]
+        assert "yes" in str(result.columns[idx]._cells[0])
 
     def test_limitrange_no_when_absent(self, adoption_stat: AdoptionStat) -> None:
         # fixture: has_limit_range=False
         result = output_table.render_adoption([adoption_stat])
         headers = [c.header for c in result.columns]
         idx = headers.index("LIMITRANGE")
-        assert "no" in result.columns[idx]._cells[0]
+        assert "no" in str(result.columns[idx]._cells[0])
 
     def test_sts_count(self, adoption_stat: AdoptionStat) -> None:
         result = output_table.render_adoption([adoption_stat])
