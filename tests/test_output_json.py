@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 
-
 import output_json
 from kubectl import AdoptionStat, CRDStat, IstioNamespaceStat, ServiceEntryStat
 
@@ -37,10 +36,45 @@ class TestRenderAdoption:
     def test_all_fields_present(self, adoption_stat: AdoptionStat) -> None:
         parsed = json.loads(output_json.render_adoption([adoption_stat]))
         entry = parsed[0]
-        for field in ("pod_count", "pods_with_limits", "has_network_policy",
-                      "deployment_count", "pdb_count", "hpa_count",
-                      "flux_resources", "argocd_resources"):
-            assert field in entry
+        expected = {
+            "pod_count", "pods_with_limits", "pods_with_probes",
+            "has_network_policy", "has_resource_quota", "has_limit_range",
+            "deployment_count", "statefulset_count", "ingress_count",
+            "pvc_count", "serviceaccount_count",
+            "pdb_count", "hpa_count", "vpa_count",
+            "flux_resources", "argocd_resources",
+            "route_count", "deploymentconfig_count",
+        }
+        for field in expected:
+            assert field in entry, f"field {field!r} missing from JSON output"
+
+    def test_boolean_fields_are_bool(self, adoption_stat: AdoptionStat) -> None:
+        parsed = json.loads(output_json.render_adoption([adoption_stat]))
+        entry = parsed[0]
+        assert entry["has_network_policy"] is True
+        assert entry["has_resource_quota"] is True
+        assert entry["has_limit_range"] is False
+
+    def test_numeric_fields_are_int(self, adoption_stat: AdoptionStat) -> None:
+        parsed = json.loads(output_json.render_adoption([adoption_stat]))
+        entry = parsed[0]
+        for field in ("pod_count", "pods_with_limits", "pods_with_probes",
+                      "statefulset_count", "ingress_count", "pvc_count",
+                      "serviceaccount_count", "vpa_count"):
+            assert isinstance(entry[field], int), f"{field!r} should be int"
+
+    def test_oc_fields_present_and_zero_by_default(self, adoption_stat: AdoptionStat) -> None:
+        parsed = json.loads(output_json.render_adoption([adoption_stat]))
+        assert parsed[0]["route_count"] == 0
+        assert parsed[0]["deploymentconfig_count"] == 0
+
+    def test_oc_fields_with_values(self, adoption_stat_oc: AdoptionStat) -> None:
+        parsed = json.loads(output_json.render_adoption([adoption_stat_oc]))
+        assert parsed[0]["route_count"] == 3
+        assert parsed[0]["deploymentconfig_count"] == 2
+
+    def test_empty_list(self) -> None:
+        assert json.loads(output_json.render_adoption([])) == []
 
 
 class TestRenderIstio:
@@ -133,6 +167,22 @@ class TestRenderAll:
         )
         for key in ("crds", "adoption", "istio", "service_entries"):
             assert isinstance(parsed[key], list)
+
+    def test_adoption_section_contains_new_fields(
+        self,
+        crd_stat: CRDStat,
+        adoption_stat: AdoptionStat,
+        istio_stat: IstioNamespaceStat,
+        service_entry: ServiceEntryStat,
+    ) -> None:
+        parsed = json.loads(
+            output_json.render_all([crd_stat], [adoption_stat], [istio_stat], [service_entry])
+        )
+        entry = parsed["adoption"][0]
+        for field in ("pods_with_probes", "has_resource_quota", "has_limit_range",
+                      "statefulset_count", "ingress_count", "pvc_count",
+                      "serviceaccount_count", "vpa_count"):
+            assert field in entry, f"field {field!r} missing from render_all adoption section"
 
     def test_empty_inputs(self) -> None:
         parsed = json.loads(output_json.render_all([], [], [], []))

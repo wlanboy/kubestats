@@ -73,6 +73,22 @@ class TestRenderAdoption:
         result = output_table.render_adoption([adoption_stat])
         assert isinstance(result, Table)
 
+    def test_row_count(self, adoption_stat: AdoptionStat) -> None:
+        result = output_table.render_adoption([adoption_stat])
+        assert result.row_count == 1
+
+    def test_column_count_without_oc(self, adoption_stat: AdoptionStat) -> None:
+        result = output_table.render_adoption([adoption_stat])
+        # NAMESPACE PODS LIMITS PROBES NETPOL QUOTA LIMITRANGE
+        # DEPLOYS STS INGRESS PVC SA PDB HPA VPA FLUX ARGO = 17
+        assert len(result.columns) == 17
+
+    def test_column_count_with_oc(
+        self, adoption_stat: AdoptionStat, adoption_stat_oc: AdoptionStat
+    ) -> None:
+        result = output_table.render_adoption([adoption_stat, adoption_stat_oc])
+        assert len(result.columns) == 19
+
     def test_no_oc_columns_by_default(self, adoption_stat: AdoptionStat) -> None:
         result = output_table.render_adoption([adoption_stat])
         col_names = [c.header for c in result.columns]
@@ -87,9 +103,67 @@ class TestRenderAdoption:
         assert "ROUTES" in col_names
         assert "DC" in col_names
 
-    def test_row_count(self, adoption_stat: AdoptionStat) -> None:
+    def test_new_columns_present(self, adoption_stat: AdoptionStat) -> None:
+        col_names = [c.header for c in output_table.render_adoption([adoption_stat]).columns]
+        for col in ("PROBES", "QUOTA", "LIMITRANGE", "STS", "INGRESS", "PVC", "SA", "VPA"):
+            assert col in col_names, f"column {col!r} missing"
+
+    def test_probes_column_format(self, adoption_stat: AdoptionStat) -> None:
+        # fixture: pods_with_probes=5, pod_count=10 → "5/10"
         result = output_table.render_adoption([adoption_stat])
-        assert result.row_count == 1
+        headers = [c.header for c in result.columns]
+        probes_idx = headers.index("PROBES")
+        cell = result.columns[probes_idx]._cells[0]
+        assert cell == "5/10"
+
+    def test_limits_column_format(self, adoption_stat: AdoptionStat) -> None:
+        result = output_table.render_adoption([adoption_stat])
+        headers = [c.header for c in result.columns]
+        limits_idx = headers.index("LIMITS")
+        cell = result.columns[limits_idx]._cells[0]
+        assert cell == "7/10"
+
+    def test_quota_yes_when_present(self, adoption_stat: AdoptionStat) -> None:
+        # fixture: has_resource_quota=True
+        result = output_table.render_adoption([adoption_stat])
+        headers = [c.header for c in result.columns]
+        idx = headers.index("QUOTA")
+        assert "yes" in result.columns[idx]._cells[0]
+
+    def test_limitrange_no_when_absent(self, adoption_stat: AdoptionStat) -> None:
+        # fixture: has_limit_range=False
+        result = output_table.render_adoption([adoption_stat])
+        headers = [c.header for c in result.columns]
+        idx = headers.index("LIMITRANGE")
+        assert "no" in result.columns[idx]._cells[0]
+
+    def test_sts_count(self, adoption_stat: AdoptionStat) -> None:
+        result = output_table.render_adoption([adoption_stat])
+        headers = [c.header for c in result.columns]
+        idx = headers.index("STS")
+        assert result.columns[idx]._cells[0] == "1"
+
+    def test_pvc_count(self, adoption_stat: AdoptionStat) -> None:
+        result = output_table.render_adoption([adoption_stat])
+        headers = [c.header for c in result.columns]
+        idx = headers.index("PVC")
+        assert result.columns[idx]._cells[0] == "3"
+
+    def test_sa_count(self, adoption_stat: AdoptionStat) -> None:
+        result = output_table.render_adoption([adoption_stat])
+        headers = [c.header for c in result.columns]
+        idx = headers.index("SA")
+        assert result.columns[idx]._cells[0] == "2"
+
+    def test_vpa_zero(self, adoption_stat: AdoptionStat) -> None:
+        result = output_table.render_adoption([adoption_stat])
+        headers = [c.header for c in result.columns]
+        idx = headers.index("VPA")
+        assert result.columns[idx]._cells[0] == "0"
+
+    def test_empty_list(self) -> None:
+        result = output_table.render_adoption([])
+        assert result.row_count == 0
 
 
 class TestRenderIstio:
@@ -139,15 +213,15 @@ class TestRenderIstioPolicies:
 
 
 class TestRenderServiceEntries:
-    def test_returns_table(self, service_entry: "ServiceEntryStat") -> None:
+    def test_returns_table(self, service_entry: ServiceEntryStat) -> None:
         result = output_table.render_service_entries([service_entry])
         assert isinstance(result, Table)
 
-    def test_column_count(self, service_entry: "ServiceEntryStat") -> None:
+    def test_column_count(self, service_entry: ServiceEntryStat) -> None:
         result = output_table.render_service_entries([service_entry])
         assert len(result.columns) == 5
 
-    def test_row_count(self, service_entry: "ServiceEntryStat") -> None:
+    def test_row_count(self, service_entry: ServiceEntryStat) -> None:
         result = output_table.render_service_entries([service_entry])
         assert result.row_count == 1
 
