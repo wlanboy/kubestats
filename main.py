@@ -136,6 +136,15 @@ def crds(
     breakdown: Annotated[bool, typer.Option(
         "--breakdown",
         help="Also show per-namespace instance matrix (table output only).")] = False,
+    search: Annotated[Optional[str], typer.Option(
+        "--search", "-s",
+        help="Filter by CRD name, kind, or group (case-insensitive substring).")] = None,
+    group: Annotated[Optional[str], typer.Option(
+        "--group", "-g",
+        help="Filter by API group, e.g. cert-manager.io.")] = None,
+    include_empty: Annotated[bool, typer.Option(
+        "--all",
+        help="Include CRDs with zero instances (installed but unused).")] = False,
     output: Annotated[OutputFormat, typer.Option(
         "--output", "-o",
         help="Output format: table (default), json, or csv.")] = OutputFormat.table,
@@ -154,12 +163,18 @@ def crds(
     total = len(ns_names)
 
     with console.status("Collecting CRD statistics…"):
-        stats = kubectl.get_crd_stats(ns_names)
+        stats = kubectl.get_crd_stats(
+            ns_names,
+            include_empty=include_empty,
+            search=search,
+            group_filter=group,
+        )
 
     if output == OutputFormat.table:
         console.print(output_table.render_crds(stats, total))
         if breakdown:
-            console.print(output_table.render_crds_per_namespace(stats, ns_names))
+            ns_with_instances = sorted({ns for s in stats for ns in s.instances_by_namespace})
+            console.print(output_table.render_crds_per_namespace(stats, ns_with_instances))
     elif output == OutputFormat.json:
         _emit(output_json.render_crds(stats), output, "crds", output_dir)
     else:
