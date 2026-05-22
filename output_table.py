@@ -90,6 +90,7 @@ def render_adoption(stats: list[AdoptionStat]) -> Table:
     table.add_column("STS", justify="right")
     table.add_column("INGRESS", justify="right")
     table.add_column("PVC", justify="right")
+    table.add_column("SA", justify="right")
     table.add_column("PDB", justify="right")
     table.add_column("HPA", justify="right")
     table.add_column("VPA", justify="right")
@@ -112,6 +113,7 @@ def render_adoption(stats: list[AdoptionStat]) -> Table:
             str(s.statefulset_count),
             str(s.ingress_count),
             str(s.pvc_count),
+            str(s.serviceaccount_count),
             str(s.pdb_count),
             str(s.hpa_count),
             str(s.vpa_count),

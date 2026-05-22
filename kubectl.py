@@ -81,6 +81,7 @@ class AdoptionStat:
     statefulset_count: int
     ingress_count: int
     pvc_count: int
+    serviceaccount_count: int
     pdb_count: int
     hpa_count: int
     vpa_count: int
@@ -295,6 +296,9 @@ def get_adoption_stats(namespace_names: list[str]) -> list[AdoptionStat]:
             pvcs: list[Any] = cast(Any, v1.list_namespaced_persistent_volume_claim(namespace=ns)).items
             pvc_count = len(pvcs)
 
+            service_accounts: list[Any] = cast(Any, v1.list_namespaced_service_account(namespace=ns)).items
+            serviceaccount_count = len(service_accounts)
+
             pdb_count = 0
             if policy:
                 try:
@@ -345,6 +349,7 @@ def get_adoption_stats(namespace_names: list[str]) -> list[AdoptionStat]:
                 statefulset_count=statefulset_count,
                 ingress_count=ingress_count,
                 pvc_count=pvc_count,
+                serviceaccount_count=serviceaccount_count,
                 pdb_count=pdb_count,
                 hpa_count=hpa_count,
                 vpa_count=vpa_count,
