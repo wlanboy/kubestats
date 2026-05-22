@@ -150,20 +150,20 @@ uv run analytics adoption [--namespace NS] [--output table|json|csv] [--output-d
 
 ```text
              Adoption Rate per Namespace
- NAMESPACE    PODS  LIMITS  PROBES  NETPOL  QUOTA  LIMITRANGE  DEPLOYS  STS  INGRESS  PDB  HPA  VPA  FLUX  ARGO
- team-alpha   8     8/8     6/8     yes     yes    no          3        1    2        1    1    0    5     0
- team-beta    5     2/5     0/5     no      no     no          2        0    1        0    0    0    2     0
- platform     14    14/14   14/14   yes     yes    yes         7        2    4        4    3    1    12    0
+ NAMESPACE    PODS  LIMITS  PROBES  NETPOL  QUOTA  LIMITRANGE  DEPLOYS  STS  INGRESS  PVC  PDB  HPA  VPA  FLUX  ARGO
+ team-alpha   8     8/8     6/8     yes     yes    no          3        1    2        4    1    1    0    5     0
+ team-beta    5     2/5     0/5     no      no     no          2        0    1        0    0    0    0    2     0
+ platform     14    14/14   14/14   yes     yes    yes         7        2    4        9    4    3    1    12    0
 ```
 
 **OpenShift output (`--tool oc`) — includes two extra columns:**
 
 ```text
              Adoption Rate per Namespace
- NAMESPACE    PODS  LIMITS  PROBES  NETPOL  QUOTA  LIMITRANGE  DEPLOYS  STS  INGRESS  PDB  HPA  VPA  FLUX  ARGO  ROUTES  DC
- team-alpha   8     8/8     6/8     yes     yes    no          3        1    2        1    1    0    5     0     2       1
- team-beta    5     2/5     0/5     no      no     no          2        0    1        0    0    0    2     0     1       0
- platform     14    14/14   14/14   yes     yes    yes         7        2    4        4    3    1    12    0     8       3
+ NAMESPACE    PODS  LIMITS  PROBES  NETPOL  QUOTA  LIMITRANGE  DEPLOYS  STS  INGRESS  PVC  PDB  HPA  VPA  FLUX  ARGO  ROUTES  DC
+ team-alpha   8     8/8     6/8     yes     yes    no          3        1    2        4    1    1    0    5     0     2       1
+ team-beta    5     2/5     0/5     no      no     no          2        0    1        0    0    0    0    2     0     1       0
+ platform     14    14/14   14/14   yes     yes    yes         7        2    4        9    4    3    1    12    0     8       3
 ```
 
 The `ROUTES` and `DC` columns are **only shown when at least one namespace has data** — they stay hidden on plain Kubernetes clusters.
@@ -178,6 +178,7 @@ The `ROUTES` and `DC` columns are **only shown when at least one namespace has d
 | `DEPLOYS` | count of `Deployments` |
 | `STS` | count of `StatefulSets` |
 | `INGRESS` | count of `Ingress` resources |
+| `PVC` | count of `PersistentVolumeClaims` in the namespace |
 | `PDB` | count of `PodDisruptionBudgets` |
 | `HPA` | count of `HorizontalPodAutoscalers` targeting a Deployment |
 | `VPA` | count of `VerticalPodAutoscalers` (`autoscaling.k8s.io/v1`) |

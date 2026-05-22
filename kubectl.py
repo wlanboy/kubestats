@@ -80,6 +80,7 @@ class AdoptionStat:
     deployment_count: int
     statefulset_count: int
     ingress_count: int
+    pvc_count: int
     pdb_count: int
     hpa_count: int
     vpa_count: int
@@ -291,6 +292,9 @@ def get_adoption_stats(namespace_names: list[str]) -> list[AdoptionStat]:
             ingresses: list[Any] = cast(Any, networking.list_namespaced_ingress(namespace=ns)).items
             ingress_count = len(ingresses)
 
+            pvcs: list[Any] = cast(Any, v1.list_namespaced_persistent_volume_claim(namespace=ns)).items
+            pvc_count = len(pvcs)
+
             pdb_count = 0
             if policy:
                 try:
@@ -340,6 +344,7 @@ def get_adoption_stats(namespace_names: list[str]) -> list[AdoptionStat]:
                 deployment_count=deployment_count,
                 statefulset_count=statefulset_count,
                 ingress_count=ingress_count,
+                pvc_count=pvc_count,
                 pdb_count=pdb_count,
                 hpa_count=hpa_count,
                 vpa_count=vpa_count,
