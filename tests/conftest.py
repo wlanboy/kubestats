@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from kubectl import (
+from kubestats.kubectl import (
     AdoptionStat,
     CRDStat,
     IstioNamespaceStat,

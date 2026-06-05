@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 
-from kubectl import AdoptionStat, CRDStat, NamespaceInfo
+from kubestats.kubectl import AdoptionStat, CRDStat, NamespaceInfo
 
 
 class TestCRDStatProperties:

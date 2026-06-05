@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 
-from kubectl import AdoptionStat, CRDStat, IstioNamespaceStat, ServiceEntryStat
+from .kubectl import AdoptionStat, CRDStat, IstioNamespaceStat, ServiceEntryStat
 
 _TRAFFIC_FIELDS = frozenset([
     "namespace", "virtual_services", "destination_rules",

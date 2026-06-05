@@ -425,23 +425,61 @@ uv run analytics --tool oc all --output csv --output-dir ./openshift-report/
 
 ## Installation
 
+### Global install (recommended)
+
+Build a wheel and install `analytics` as a system-wide command:
+
 ```bash
-cd kubestats
+uv build
+uv tool install dist/kubestats-0.1.0-py3-none-any.whl
+
+# the command is now available everywhere
+analytics --help
+analytics adoption
+analytics --tool oc crds
+```
+
+Upgrade after a new build:
+
+```bash
+uv build
+uv tool install --force dist/kubestats-0.1.0-py3-none-any.whl
+```
+
+Uninstall:
+
+```bash
+uv tool uninstall kubestats
+```
+
+### Development install
+
+```bash
 uv sync
 ```
 
-This installs all dependencies (`kubernetes`, `rich`, `typer`) and creates a virtual environment.
+This installs all dependencies into a local `.venv` and makes the tool available via `uv run`:
 
 ```bash
-# run via uv
 uv run analytics --help
+uv run analytics --tool oc adoption
+```
 
-# or activate the venv and run directly
-source .venv/bin/activate
-analytics --help
+---
 
-# OpenShift usage
-uv run analytics --tool oc --help
+## Building the Wheel
+
+```bash
+uv build
+# creates:
+#   dist/kubestats-0.1.0-py3-none-any.whl
+#   dist/kubestats-0.1.0.tar.gz
+```
+
+To test the wheel before installing:
+
+```bash
+uv run --with dist/kubestats-0.1.0-py3-none-any.whl analytics --help
 ```
 
 ---
@@ -449,10 +487,7 @@ uv run analytics --tool oc --help
 ## Development
 
 ```bash
-cd kubestats
-
-# install including dev dependencies (pyright, ruff)
-uv lock --upgrade
+# install including dev dependencies (pyright, ruff, pytest)
 uv sync
 
 # type checking
@@ -460,6 +495,9 @@ uv run pyright
 
 # linting
 uv run ruff check
+
+# tests
+uv run pytest
 
 # run
 uv run analytics --help

@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import json
 
-import output_json
-from kubectl import AdoptionStat, CRDStat, IstioNamespaceStat, ServiceEntryStat
+from kubestats import output_json
+from kubestats.kubectl import AdoptionStat, CRDStat, IstioNamespaceStat, ServiceEntryStat
 
 
 class TestRenderCrds:

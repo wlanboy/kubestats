@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from rich.table import Table
 
-import output_table
-from kubectl import AdoptionStat, CRDStat, IstioNamespaceStat, ServiceEntryStat
+from kubestats import output_table
+from kubestats.kubectl import AdoptionStat, CRDStat, IstioNamespaceStat, ServiceEntryStat
 
 
 class TestHelpers:

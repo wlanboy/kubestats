@@ -17,10 +17,10 @@ from rich.progress import (
 )
 from rich.rule import Rule
 
-import kubectl
-import output_csv
-import output_json
-import output_table
+from . import kubectl
+from . import output_csv
+from . import output_json
+from . import output_table
 
 # ---------------------------------------------------------------------------
 # App setup

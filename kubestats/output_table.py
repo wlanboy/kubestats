@@ -4,7 +4,7 @@ from __future__ import annotations
 from rich import box
 from rich.table import Table
 
-from kubectl import (
+from .kubectl import (
     AdoptionStat,
     CRDStat,
     IstioNamespaceStat,
