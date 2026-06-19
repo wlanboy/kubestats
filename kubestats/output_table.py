@@ -4,19 +4,19 @@ from __future__ import annotations
 from rich import box
 from rich.table import Table
 
+from .models import (
+    AdoptionStat,
+    CRDStat,
+    IstioNamespaceStat,
+    ServiceEntryStat,
+)
+
 _MTLS_COLOR: dict[str, str] = {
     "STRICT": "green",
     "PERMISSIVE": "yellow",
     "DISABLE": "red",
     "none": "dim",
 }
-
-from .kubectl import (
-    AdoptionStat,
-    CRDStat,
-    IstioNamespaceStat,
-    ServiceEntryStat,
-)
 
 
 def _pct(part: int, total: int) -> str:

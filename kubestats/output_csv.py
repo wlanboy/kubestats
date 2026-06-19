@@ -5,7 +5,7 @@ import csv
 import io
 from dataclasses import asdict
 
-from .kubectl import AdoptionStat, CRDStat, IstioNamespaceStat, ServiceEntryStat
+from .models import AdoptionStat, CRDStat, IstioNamespaceStat, ServiceEntryStat
 
 
 def _buf(fields: list[str]) -> tuple[io.StringIO, csv.DictWriter]:
