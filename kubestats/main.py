@@ -246,11 +246,13 @@ def istio(
     if namespace:
         namespaces = [ns for ns in namespaces if ns.name == namespace]
 
-    with console.status("Collecting Istio statistics…"):
-        stats = kubectl.get_istio_stats(namespaces)
-
     # Default: show enrollment when no specific flag is given
     show_enrollment = not any([traffic, external, policies])
+
+    stats: list = []
+    if show_enrollment or traffic or policies:
+        with console.status("Collecting Istio statistics…"):
+            stats = kubectl.get_istio_stats(namespaces)
 
     if show_enrollment:
         _render(
