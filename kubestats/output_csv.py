@@ -16,8 +16,8 @@ def _buf(fields: list[str]) -> tuple[io.StringIO, csv.DictWriter]:
 
 
 def render_crds(stats: list[CRDStat], total_namespaces: int) -> str:
-    fields = ["name", "group", "kind", "namespace_count",
-              "total_namespaces", "total_instances", "adoption_pct"]
+    fields = ["name", "group", "kind", "plural", "namespaced",
+              "namespace_count", "total_namespaces", "total_instances", "adoption_pct"]
     buf, writer = _buf(fields)
     for s in stats:
         pct = round(s.namespace_count * 100 / total_namespaces, 1) if total_namespaces else 0
@@ -25,6 +25,8 @@ def render_crds(stats: list[CRDStat], total_namespaces: int) -> str:
             "name": s.name,
             "group": s.group,
             "kind": s.kind,
+            "plural": s.plural,
+            "namespaced": s.namespaced,
             "namespace_count": s.namespace_count,
             "total_namespaces": total_namespaces,
             "total_instances": s.total_instances,
