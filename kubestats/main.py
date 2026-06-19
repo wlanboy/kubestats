@@ -19,7 +19,6 @@ from rich.rule import Rule
 
 from . import kubectl
 from . import output_csv
-from . import output_json
 from . import output_table
 
 # ---------------------------------------------------------------------------
@@ -38,7 +37,6 @@ VERSION = "0.1.0"
 
 class OutputFormat(str, Enum):
     table = "table"
-    json = "json"
     csv = "csv"
 
 
@@ -105,7 +103,7 @@ def _bootstrap() -> None:
 
 def _emit(content: str, fmt: OutputFormat, name: str,
           output_dir: Optional[Path]) -> None:
-    """Write CSV/JSON content to a file (output_dir set) or stdout."""
+    """Write CSV content to a file (output_dir set) or stdout."""
     if output_dir and fmt != OutputFormat.table:
         output_dir.mkdir(parents=True, exist_ok=True)
         path = output_dir / f"{name}.{fmt.value}"
@@ -115,11 +113,9 @@ def _emit(content: str, fmt: OutputFormat, name: str,
 
 
 def _render(data, fmt: OutputFormat, name: str, output_dir: Optional[Path],
-            table_fn, json_fn, csv_fn) -> None:
+            table_fn, csv_fn) -> None:
     if fmt == OutputFormat.table:
         console.print(table_fn(data))
-    elif fmt == OutputFormat.json:
-        _emit(json_fn(data), fmt, name, output_dir)
     else:
         _emit(csv_fn(data), fmt, name, output_dir)
 
@@ -147,7 +143,7 @@ def crds(
         help="Include CRDs with zero instances (installed but unused).")] = False,
     output: Annotated[OutputFormat, typer.Option(
         "--output", "-o",
-        help="Output format: table (default), json, or csv.")] = OutputFormat.table,
+        help="Output format: table (default) or csv.")] = OutputFormat.table,
     output_dir: Annotated[Optional[Path], typer.Option(
         "--output-dir",
         help="Write output file(s) to this directory instead of stdout.")] = None,
@@ -175,8 +171,6 @@ def crds(
         if breakdown:
             ns_with_instances = sorted({ns for s in stats for ns in s.instances_by_namespace})
             console.print(output_table.render_crds_per_namespace(stats, ns_with_instances))
-    elif output == OutputFormat.json:
-        _emit(output_json.render_crds(stats), output, "crds", output_dir)
     else:
         _emit(output_csv.render_crds(stats, total), output, "crds", output_dir)
 
@@ -192,7 +186,7 @@ def adoption(
         help="Limit to one namespace.")] = None,
     output: Annotated[OutputFormat, typer.Option(
         "--output", "-o",
-        help="Output format: table (default), json, or csv.")] = OutputFormat.table,
+        help="Output format: table (default) or csv.")] = OutputFormat.table,
     output_dir: Annotated[Optional[Path], typer.Option(
         "--output-dir",
         help="Write output file(s) to this directory instead of stdout.")] = None,
@@ -209,7 +203,6 @@ def adoption(
     _render(
         stats, output, "adoption", output_dir,
         output_table.render_adoption,
-        output_json.render_adoption,
         output_csv.render_adoption,
     )
 
@@ -234,7 +227,7 @@ def istio(
         help="Limit to one namespace.")] = None,
     output: Annotated[OutputFormat, typer.Option(
         "--output", "-o",
-        help="Output format: table (default), json, or csv.")] = OutputFormat.table,
+        help="Output format: table (default) or csv.")] = OutputFormat.table,
     output_dir: Annotated[Optional[Path], typer.Option(
         "--output-dir",
         help="Write output file(s) to this directory instead of stdout.")] = None,
@@ -258,7 +251,6 @@ def istio(
         _render(
             stats, output, "istio", output_dir,
             output_table.render_istio,
-            output_json.render_istio,
             output_csv.render_istio,
         )
 
@@ -266,7 +258,6 @@ def istio(
         _render(
             stats, output, "istio-traffic", output_dir,
             output_table.render_istio_traffic,
-            output_json.render_istio_traffic,
             output_csv.render_istio_traffic,
         )
 
@@ -274,7 +265,6 @@ def istio(
         _render(
             stats, output, "istio-policies", output_dir,
             output_table.render_istio_policies,
-            output_json.render_istio_policies,
             output_csv.render_istio_policies,
         )
 
@@ -285,7 +275,6 @@ def istio(
         _render(
             entries, output, "istio-external", output_dir,
             output_table.render_service_entries,
-            output_json.render_service_entries,
             output_csv.render_service_entries,
         )
 
@@ -304,7 +293,7 @@ def run_all(
         help="Include per-namespace CRD instance matrix (table output only).")] = False,
     output: Annotated[OutputFormat, typer.Option(
         "--output", "-o",
-        help="Output format: table (default), json, or csv.")] = OutputFormat.table,
+        help="Output format: table (default) or csv.")] = OutputFormat.table,
     output_dir: Annotated[Optional[Path], typer.Option(
         "--output-dir",
         help="Write output file(s) to this directory. Required for --output csv.")] = None,
@@ -364,11 +353,6 @@ def run_all(
     # --- Render ---
     if output == OutputFormat.table:
         _table_all(crd_stats, total_ns, adoption_stats, istio_stats, entries, breakdown)
-
-    elif output == OutputFormat.json:
-        content = output_json.render_all(crd_stats, adoption_stats, istio_stats, entries)
-        _emit(content, output, "all", output_dir)
-
     else:  # csv — one file per report (output_dir guaranteed by early check above)
         assert output_dir is not None
         _csv_all(crd_stats, total_ns, adoption_stats, istio_stats, entries, output_dir)
