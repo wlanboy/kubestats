@@ -246,10 +246,7 @@ def get_adoption_stats(namespace_names: list[str]) -> list[AdoptionStat]:
     networking = client.NetworkingV1Api()
     custom = client.CustomObjectsApi()
 
-    try:
-        policy = client.PolicyV1Api()
-    except Exception:
-        policy = None
+    policy = client.PolicyV1Api()
 
     stats: list[AdoptionStat] = []
 
@@ -300,13 +297,12 @@ def get_adoption_stats(namespace_names: list[str]) -> list[AdoptionStat]:
             serviceaccount_count = len(service_accounts)
 
             pdb_count = 0
-            if policy:
-                try:
-                    pdb_count = len(cast(Any,
-                        policy.list_namespaced_pod_disruption_budget(namespace=ns)
-                    ).items)
-                except ApiException:
-                    pass
+            try:
+                pdb_count = len(cast(Any,
+                    policy.list_namespaced_pod_disruption_budget(namespace=ns)
+                ).items)
+            except ApiException:
+                pass
 
             hpas: list[Any] = cast(Any, autoscaling.list_namespaced_horizontal_pod_autoscaler(namespace=ns)).items
             hpa_targets = {h.spec.scale_target_ref.name for h in hpas}
