@@ -4,6 +4,13 @@ from __future__ import annotations
 from rich import box
 from rich.table import Table
 
+_MTLS_COLOR: dict[str, str] = {
+    "STRICT": "green",
+    "PERMISSIVE": "yellow",
+    "DISABLE": "red",
+    "none": "dim",
+}
+
 from .kubectl import (
     AdoptionStat,
     CRDStat,
@@ -59,7 +66,7 @@ def render_crds_per_namespace(stats: list[CRDStat],
     )
     table.add_column("NAMESPACE", style="cyan", no_wrap=True)
     for s in stats:
-        table.add_column(s.kind, justify="right")
+        table.add_column(f"{s.kind}\n[dim]{s.group}[/dim]", justify="right")
 
     for ns in namespace_names:
         row = [ns] + [str(s.instances_by_namespace.get(ns, 0)) for s in stats]
@@ -198,15 +205,8 @@ def render_istio_policies(stats: list[IstioNamespaceStat]) -> Table:
     table.add_column("AuthorizationPolicies", justify="right")
     table.add_column("mTLS-MODE", justify="center")
 
-    _mode_color = {
-        "STRICT": "green",
-        "PERMISSIVE": "yellow",
-        "DISABLE": "red",
-        "none": "dim",
-    }
-
     for s in stats:
-        color = _mode_color.get(s.mtls_mode, "white")
+        color = _MTLS_COLOR.get(s.mtls_mode, "white")
         table.add_row(
             s.namespace,
             str(s.peer_authentications),
