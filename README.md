@@ -70,7 +70,7 @@ CRD adoption rate — how many instances of each CRD exist across which namespac
 
 ```bash
 uv run analytics crds [--namespace NS] [--breakdown] [--search TEXT] [--group GROUP]
-                      [--all] [--output table|json|csv] [--output-dir DIR]
+                      [--all] [--output table|csv] [--output-dir DIR]
 ```
 
 Output (`--output table`):
@@ -123,12 +123,6 @@ uv run analytics crds --all
 # Combine filters with breakdown
 uv run analytics crds --group istio.io --breakdown --namespace team-alpha
 
-# Export as JSON
-uv run analytics crds --output json > crds.json
-
-# Write JSON to a directory
-uv run analytics crds --output json --output-dir ./out/
-
 # Export as CSV
 uv run analytics crds --output csv > crds.csv
 
@@ -143,7 +137,7 @@ uv run analytics --tool oc crds --breakdown
 Per-namespace adoption metrics — raw counts for key platform capabilities.
 
 ```bash
-uv run analytics adoption [--namespace NS] [--output table|json|csv] [--output-dir DIR]
+uv run analytics adoption [--namespace NS] [--output table|csv] [--output-dir DIR]
 ```
 
 **Standard output (`kubectl`):**
@@ -198,15 +192,10 @@ uv run analytics adoption
 uv run analytics adoption --namespace team-alpha
 uv run analytics adoption -n platform
 
-# Export as JSON to stdout
-uv run analytics adoption --output json
-uv run analytics adoption -o json > adoption.json
-
 # Export as CSV to stdout
 uv run analytics adoption --output csv > adoption.csv
 
-# Write output to a directory (file: adoption.json / adoption.csv)
-uv run analytics adoption --output json --output-dir ./out/
+# Write output to a directory (file: adoption.csv)
 uv run analytics adoption --output csv --output-dir ./out/
 
 # OpenShift — includes ROUTES and DC columns
@@ -224,7 +213,7 @@ Istio service mesh usage. Without flags, shows namespace enrollment. Flags can b
 
 ```bash
 uv run analytics istio [--traffic] [--external] [--policies]
-                [--namespace NS] [--output table|json|csv] [--output-dir DIR]
+                [--namespace NS] [--output table|csv] [--output-dir DIR]
 ```
 
 **Enrollment** (default):
@@ -301,9 +290,6 @@ uv run analytics istio --traffic --policies --external
 # Combined: traffic and security policies
 uv run analytics istio --traffic --policies
 
-# Export enrollment as JSON
-uv run analytics istio --output json > istio.json
-
 # Export external services as CSV
 uv run analytics istio --external --output csv > external-services.csv
 
@@ -321,7 +307,7 @@ uv run analytics --tool oc istio --traffic
 Runs all reports sequentially. Collects data first (4 steps), then renders all 6 sections.
 
 ```bash
-uv run analytics all [--namespace NS] [--breakdown] [--output table|json|csv] [--output-dir DIR]
+uv run analytics all [--namespace NS] [--breakdown] [--output table|csv] [--output-dir DIR]
 ```
 
 ```text
@@ -362,13 +348,6 @@ uv run analytics all -n team-alpha
 # Include the per-namespace CRD instance matrix (table output only)
 uv run analytics all --breakdown
 
-# JSON — stream to stdout
-uv run analytics all --output json
-
-# JSON — write to directory (file: all.json, keys: crds, adoption, istio, service_entries)
-uv run analytics all --output json --output-dir ./reports/
-uv run analytics all -o json --output-dir ./reports/
-
 # CSV — --output-dir is required; writes one file per report:
 #   crds.csv, adoption.csv, istio.csv,
 #   istio-traffic.csv, istio-policies.csv, istio-external.csv
@@ -377,18 +356,15 @@ uv run analytics all --output csv --output-dir ./reports/
 # OpenShift — adoption.csv includes route_count and deploymentconfig_count
 uv run analytics --tool oc all --output csv --output-dir ./reports/
 
-# OpenShift — stream combined JSON report
-uv run analytics --tool oc all --output json > cluster-report.json
 ```
 
 ---
 
 ## Output Formats
 
-All commands support `--output table|json|csv`.
+All commands support `--output table|csv`.
 
 - **table** (default) — rendered to the terminal with Rich; OpenShift-specific columns appear automatically when there is data
-- **json** — serialized dataclass fields; streamed to stdout or written to `--output-dir`
 - **csv** — one row per resource; always includes all fields (OpenShift fields are `0` on non-OpenShift clusters); streamed to stdout or written to `--output-dir`
 
 ```bash
@@ -396,7 +372,7 @@ All commands support `--output table|json|csv`.
 uv run analytics istio --external --output csv > external-services.csv
 
 # write to directory
-uv run analytics crds --output json --output-dir ./out/
+uv run analytics crds --output csv --output-dir ./out/
 
 # OpenShift full export
 uv run analytics --tool oc all --output csv --output-dir ./openshift-report/
