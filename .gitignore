@@ -1,2 +1,12 @@
+# Python-generated files
 __pycache__/
+*.py[oc]
+build/
+dist/
+logs/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
 kubestats.egg-info/
