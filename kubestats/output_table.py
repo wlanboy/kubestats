@@ -31,17 +31,25 @@ def _yn(value: bool, *, color: bool = True) -> str:
     return "[red]no[/red]" if color else "no"
 
 
+def _table(title: str, first_column: str) -> Table:
+    """A table with the standard title/box styling and its first (identifying) column."""
+    table = Table(title=title, box=box.SIMPLE_HEAD)
+    table.add_column(first_column, style="cyan", no_wrap=True)
+    return table
+
+
+def _add_rows(table: Table, stats: list, *fields: str) -> None:
+    """Add one row per stat, projecting each onto `fields` in order."""
+    for s in stats:
+        table.add_row(*(str(getattr(s, f)) for f in fields))
+
+
 # ---------------------------------------------------------------------------
 # CRD adoption
 # ---------------------------------------------------------------------------
 
 def render_crds(stats: list[CRDStat], total_namespaces: int) -> Table:
-    table = Table(
-        title="Custom Resource Adoption",
-        box=box.SIMPLE_HEAD,
-        show_lines=False,
-    )
-    table.add_column("CRD", style="cyan", no_wrap=True)
+    table = _table("Custom Resource Adoption", "CRD")
     table.add_column("NAMESPACES", justify="right")
     table.add_column("INSTANCES", justify="right")
     table.add_column("ADOPTION", justify="right")
@@ -60,11 +68,7 @@ def render_crds(stats: list[CRDStat], total_namespaces: int) -> Table:
 def render_crds_per_namespace(stats: list[CRDStat],
                                namespace_names: list[str]) -> Table:
     """Per-namespace breakdown: rows = namespaces, columns = CRDs."""
-    table = Table(
-        title="CRD Instances per Namespace",
-        box=box.SIMPLE_HEAD,
-    )
-    table.add_column("NAMESPACE", style="cyan", no_wrap=True)
+    table = _table("CRD Instances per Namespace", "NAMESPACE")
     for s in stats:
         table.add_column(f"{s.kind}\n[dim]{s.group}[/dim]", justify="right")
 
@@ -82,11 +86,7 @@ def render_crds_per_namespace(stats: list[CRDStat],
 def render_adoption(stats: list[AdoptionStat]) -> Table:
     show_oc = any(s.route_count or s.deploymentconfig_count for s in stats)
 
-    table = Table(
-        title="Adoption Rate per Namespace",
-        box=box.SIMPLE_HEAD,
-    )
-    table.add_column("NAMESPACE", style="cyan", no_wrap=True)
+    table = _table("Adoption Rate per Namespace", "NAMESPACE")
     table.add_column("PODS", justify="right")
     table.add_column("LIMITS", justify="right")
     table.add_column("PROBES", justify="right")
@@ -139,18 +139,14 @@ def render_adoption(stats: list[AdoptionStat]) -> Table:
 # ---------------------------------------------------------------------------
 
 def render_istio(stats: list[IstioNamespaceStat]) -> Table:
-    table = Table(
-        title="Istio Namespace Enrollment",
-        box=box.SIMPLE_HEAD,
-    )
-    table.add_column("NAMESPACE", style="cyan", no_wrap=True)
+    table = _table("Istio Namespace Enrollment", "NAMESPACE")
     table.add_column("INJECTION", justify="center")
     table.add_column("SIDECARS", justify="right")
     table.add_column("PODS", justify="right")
     table.add_column("COVERAGE", justify="right")
 
     for s in stats:
-        coverage = _pct(s.sidecar_count, s.pod_count)
+        coverage = "n/a" if s.coverage_pct is None else f"{s.coverage_pct}%"
         table.add_row(
             s.namespace,
             _yn(s.injection_enabled),
@@ -167,26 +163,15 @@ def render_istio(stats: list[IstioNamespaceStat]) -> Table:
 # ---------------------------------------------------------------------------
 
 def render_istio_traffic(stats: list[IstioNamespaceStat]) -> Table:
-    table = Table(
-        title="Istio Traffic Policies per Namespace",
-        box=box.SIMPLE_HEAD,
-    )
-    table.add_column("NAMESPACE", style="cyan", no_wrap=True)
+    table = _table("Istio Traffic Policies per Namespace", "NAMESPACE")
     table.add_column("VirtualServices", justify="right")
     table.add_column("DestinationRules", justify="right")
     table.add_column("Gateways", justify="right")
     table.add_column("ServiceEntries", justify="right")
     table.add_column("WorkloadEntries", justify="right")
 
-    for s in stats:
-        table.add_row(
-            s.namespace,
-            str(s.virtual_services),
-            str(s.destination_rules),
-            str(s.gateways),
-            str(s.service_entries),
-            str(s.workload_entries),
-        )
+    _add_rows(table, stats, "namespace", "virtual_services", "destination_rules",
+              "gateways", "service_entries", "workload_entries")
 
     return table
 
@@ -196,11 +181,7 @@ def render_istio_traffic(stats: list[IstioNamespaceStat]) -> Table:
 # ---------------------------------------------------------------------------
 
 def render_istio_policies(stats: list[IstioNamespaceStat]) -> Table:
-    table = Table(
-        title="Istio Security Policies per Namespace",
-        box=box.SIMPLE_HEAD,
-    )
-    table.add_column("NAMESPACE", style="cyan", no_wrap=True)
+    table = _table("Istio Security Policies per Namespace", "NAMESPACE")
     table.add_column("PeerAuthentication", justify="right")
     table.add_column("AuthorizationPolicies", justify="right")
     table.add_column("mTLS-MODE", justify="center")
@@ -222,11 +203,7 @@ def render_istio_policies(stats: list[IstioNamespaceStat]) -> Table:
 # ---------------------------------------------------------------------------
 
 def render_service_entries(entries: list[ServiceEntryStat]) -> Table:
-    table = Table(
-        title="Istio External Services (ServiceEntries)",
-        box=box.SIMPLE_HEAD,
-    )
-    table.add_column("NAMESPACE", style="cyan", no_wrap=True)
+    table = _table("Istio External Services (ServiceEntries)", "NAMESPACE")
     table.add_column("NAME", no_wrap=True)
     table.add_column("HOSTS")
     table.add_column("RESOLUTION", justify="center")
