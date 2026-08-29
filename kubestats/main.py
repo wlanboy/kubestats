@@ -105,7 +105,7 @@ def _bootstrap() -> None:
     try:
         kubectl.load_config(kubeconfig=_state.kubeconfig, context=_state.context)
         kubectl.set_backend(_state.tool)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - CLI boundary: report any config error as a friendly message
         console.print(f"[red]Cannot load kubeconfig:[/red] {e}")
         raise typer.Exit(1)
 
