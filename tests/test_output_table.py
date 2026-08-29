@@ -4,7 +4,12 @@ from __future__ import annotations
 from rich.table import Table
 
 from kubestats import output_table
-from kubestats.kubectl import AdoptionStat, CRDStat, IstioNamespaceStat, ServiceEntryStat
+from kubestats.kubectl import (
+    AdoptionStat,
+    CRDStat,
+    IstioNamespaceStat,
+    ServiceEntryStat,
+)
 
 
 class TestHelpers:

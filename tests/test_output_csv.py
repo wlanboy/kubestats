@@ -7,7 +7,12 @@ import io
 import pytest
 
 from kubestats import output_csv
-from kubestats.kubectl import AdoptionStat, CRDStat, IstioNamespaceStat, ServiceEntryStat
+from kubestats.kubectl import (
+    AdoptionStat,
+    CRDStat,
+    IstioNamespaceStat,
+    ServiceEntryStat,
+)
 
 
 def _parse(csv_text: str) -> list[dict[str, str]]:

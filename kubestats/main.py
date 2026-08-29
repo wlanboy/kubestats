@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 from rich.console import Console
@@ -17,9 +17,7 @@ from rich.progress import (
 )
 from rich.rule import Rule
 
-from . import kubectl
-from . import output_csv
-from . import output_table
+from . import kubectl, output_csv, output_table
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -48,8 +46,8 @@ class CliTool(str, Enum):
 @dataclass
 class _State:
     tool: CliTool = field(default=CliTool.kubectl)
-    kubeconfig: Optional[str] = field(default=None)
-    context: Optional[str] = field(default=None)
+    kubeconfig: str | None = field(default=None)
+    context: str | None = field(default=None)
 
 
 _state = _State()
@@ -67,16 +65,16 @@ def _global_options(
         "--tool", "-t",
         help="CLI backend to use: kubectl (default) or oc (OpenShift).",
     )] = CliTool.kubectl,
-    kubeconfig: Annotated[Optional[str], typer.Option(
+    kubeconfig: Annotated[str | None, typer.Option(
         "--kubeconfig",
         help="Path to kubeconfig file. Defaults to ~/.kube/config.",
         envvar="KUBECONFIG",
     )] = None,
-    context: Annotated[Optional[str], typer.Option(
+    context: Annotated[str | None, typer.Option(
         "--context",
         help="Kubeconfig context to use. Defaults to the current context.",
     )] = None,
-    version: Annotated[Optional[bool], typer.Option(
+    version: Annotated[bool | None, typer.Option(
         "--version", "-V",
         callback=_version_callback,
         is_eager=True,
@@ -102,7 +100,7 @@ def _bootstrap() -> None:
 
 
 def _emit(content: str, fmt: OutputFormat, name: str,
-          output_dir: Optional[Path]) -> None:
+          output_dir: Path | None) -> None:
     """Write CSV content to a file (output_dir set) or stdout."""
     if output_dir and fmt != OutputFormat.table:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -112,7 +110,7 @@ def _emit(content: str, fmt: OutputFormat, name: str,
         print(content, end="")
 
 
-def _render(data, fmt: OutputFormat, name: str, output_dir: Optional[Path],
+def _render(data, fmt: OutputFormat, name: str, output_dir: Path | None,
             table_fn, csv_fn) -> None:
     if fmt == OutputFormat.table:
         console.print(table_fn(data))
@@ -126,16 +124,16 @@ def _render(data, fmt: OutputFormat, name: str, output_dir: Optional[Path],
 
 @app.command()
 def crds(
-    namespace: Annotated[Optional[str], typer.Option(
+    namespace: Annotated[str | None, typer.Option(
         "--namespace", "-n",
         help="Limit to one namespace.")] = None,
     breakdown: Annotated[bool, typer.Option(
         "--breakdown",
         help="Also show per-namespace instance matrix (table output only).")] = False,
-    search: Annotated[Optional[str], typer.Option(
+    search: Annotated[str | None, typer.Option(
         "--search", "-s",
         help="Filter by CRD name, kind, or group (case-insensitive substring).")] = None,
-    group: Annotated[Optional[str], typer.Option(
+    group: Annotated[str | None, typer.Option(
         "--group", "-g",
         help="Filter by API group, e.g. cert-manager.io.")] = None,
     include_empty: Annotated[bool, typer.Option(
@@ -144,7 +142,7 @@ def crds(
     output: Annotated[OutputFormat, typer.Option(
         "--output", "-o",
         help="Output format: table (default) or csv.")] = OutputFormat.table,
-    output_dir: Annotated[Optional[Path], typer.Option(
+    output_dir: Annotated[Path | None, typer.Option(
         "--output-dir",
         help="Write output file(s) to this directory instead of stdout.")] = None,
 ) -> None:
@@ -181,13 +179,13 @@ def crds(
 
 @app.command()
 def adoption(
-    namespace: Annotated[Optional[str], typer.Option(
+    namespace: Annotated[str | None, typer.Option(
         "--namespace", "-n",
         help="Limit to one namespace.")] = None,
     output: Annotated[OutputFormat, typer.Option(
         "--output", "-o",
         help="Output format: table (default) or csv.")] = OutputFormat.table,
-    output_dir: Annotated[Optional[Path], typer.Option(
+    output_dir: Annotated[Path | None, typer.Option(
         "--output-dir",
         help="Write output file(s) to this directory instead of stdout.")] = None,
 ) -> None:
@@ -222,13 +220,13 @@ def istio(
     policies: Annotated[bool, typer.Option(
         "--policies",
         help="Show security policies (mTLS, AuthorizationPolicies).")] = False,
-    namespace: Annotated[Optional[str], typer.Option(
+    namespace: Annotated[str | None, typer.Option(
         "--namespace", "-n",
         help="Limit to one namespace.")] = None,
     output: Annotated[OutputFormat, typer.Option(
         "--output", "-o",
         help="Output format: table (default) or csv.")] = OutputFormat.table,
-    output_dir: Annotated[Optional[Path], typer.Option(
+    output_dir: Annotated[Path | None, typer.Option(
         "--output-dir",
         help="Write output file(s) to this directory instead of stdout.")] = None,
 ) -> None:
@@ -285,7 +283,7 @@ def istio(
 
 @app.command(name="all")
 def run_all(
-    namespace: Annotated[Optional[str], typer.Option(
+    namespace: Annotated[str | None, typer.Option(
         "--namespace", "-n",
         help="Limit to one namespace.")] = None,
     breakdown: Annotated[bool, typer.Option(
@@ -294,7 +292,7 @@ def run_all(
     output: Annotated[OutputFormat, typer.Option(
         "--output", "-o",
         help="Output format: table (default) or csv.")] = OutputFormat.table,
-    output_dir: Annotated[Optional[Path], typer.Option(
+    output_dir: Annotated[Path | None, typer.Option(
         "--output-dir",
         help="Write output file(s) to this directory. Required for --output csv.")] = None,
 ) -> None:

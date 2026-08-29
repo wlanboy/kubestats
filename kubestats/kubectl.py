@@ -7,7 +7,13 @@ from typing import Any, cast
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 
-from kubestats.models import AdoptionStat, CRDStat, IstioNamespaceStat, NamespaceInfo, ServiceEntryStat
+from kubestats.models import (
+    AdoptionStat,
+    CRDStat,
+    IstioNamespaceStat,
+    NamespaceInfo,
+    ServiceEntryStat,
+)
 
 logger = logging.getLogger(__name__)
 
