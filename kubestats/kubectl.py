@@ -8,7 +8,9 @@ from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 
 from kubestats.models import (
+    GVR,
     AdoptionStat,
+    CliTool,
     CRDStat,
     IstioNamespaceStat,
     NamespaceInfo,
@@ -21,10 +23,10 @@ logger = logging.getLogger(__name__)
 # Backend selection (kubectl vs oc / OpenShift)
 # ---------------------------------------------------------------------------
 
-_backend: str = "kubectl"
+_backend: CliTool = CliTool.kubectl
 
 
-def set_backend(backend: str) -> None:
+def set_backend(backend: CliTool) -> None:
     """Set the active CLI backend. Call after load_config()."""
     global _backend
     _backend = backend
@@ -53,7 +55,7 @@ def load_config(kubeconfig: str | None = None, context: str | None = None) -> No
 
 def get_namespaces() -> list[NamespaceInfo]:
     """List namespaces. In oc mode, tries OpenShift Projects first."""
-    if _backend == "oc":
+    if _backend == CliTool.oc:
         custom = client.CustomObjectsApi()
         try:
             result = cast(dict[str, Any], custom.list_cluster_custom_object(
@@ -156,12 +158,19 @@ def get_crd_stats(
 # Adoption metrics
 # ---------------------------------------------------------------------------
 
-def _count_custom(custom: client.CustomObjectsApi, group: str, versions: list[str],
-                  namespace: str, plural: str) -> int:
-    for version in versions:
+_VPA = GVR("autoscaling.k8s.io", ("v1",), "verticalpodautoscalers")
+_HELM_RELEASES = GVR("helm.toolkit.fluxcd.io", ("v2", "v2beta2", "v2beta1"), "helmreleases")
+_KUSTOMIZATIONS = GVR("kustomize.toolkit.fluxcd.io", ("v1", "v1beta2", "v1beta1"), "kustomizations")
+_ARGOCD_APPLICATIONS = GVR("argoproj.io", ("v1alpha1",), "applications")
+_OC_ROUTES = GVR("route.openshift.io", ("v1",), "routes")
+_OC_DEPLOYMENTCONFIGS = GVR("apps.openshift.io", ("v1",), "deploymentconfigs")
+
+
+def _count_custom(custom: client.CustomObjectsApi, gvr: GVR, namespace: str) -> int:
+    for version in gvr.versions:
         try:
             result = cast(dict[str, Any], custom.list_namespaced_custom_object(
-                group=group, version=version, namespace=namespace, plural=plural,
+                group=gvr.group, version=version, namespace=namespace, plural=gvr.plural,
             ))
             return len(result.get("items", []))
         except ApiException as e:
@@ -239,30 +248,20 @@ def get_adoption_stats(namespace_names: list[str]) -> list[AdoptionStat]:
             hpa_targets = {h.spec.scale_target_ref.name for h in hpas}
             hpa_count = len(hpa_targets & deployment_names)
 
-            vpa_count = _count_custom(
-                custom, "autoscaling.k8s.io", ["v1"], ns, "verticalpodautoscalers"
-            )
+            vpa_count = _count_custom(custom, _VPA, ns)
 
             flux_count = (
-                _count_custom(custom, "helm.toolkit.fluxcd.io",
-                              ["v2", "v2beta2", "v2beta1"], ns, "helmreleases")
-                + _count_custom(custom, "kustomize.toolkit.fluxcd.io",
-                                ["v1", "v1beta2", "v1beta1"], ns, "kustomizations")
+                _count_custom(custom, _HELM_RELEASES, ns)
+                + _count_custom(custom, _KUSTOMIZATIONS, ns)
             )
 
-            argocd_count = _count_custom(
-                custom, "argoproj.io", ["v1alpha1"], ns, "applications"
-            )
+            argocd_count = _count_custom(custom, _ARGOCD_APPLICATIONS, ns)
 
             route_count = 0
             dc_count = 0
-            if _backend == "oc":
-                route_count = _count_custom(
-                    custom, "route.openshift.io", ["v1"], ns, "routes"
-                )
-                dc_count = _count_custom(
-                    custom, "apps.openshift.io", ["v1"], ns, "deploymentconfigs"
-                )
+            if _backend == CliTool.oc:
+                route_count = _count_custom(custom, _OC_ROUTES, ns)
+                dc_count = _count_custom(custom, _OC_DEPLOYMENTCONFIGS, ns)
 
             stats.append(AdoptionStat(
                 namespace=ns,
@@ -296,9 +295,12 @@ def get_adoption_stats(namespace_names: list[str]) -> list[AdoptionStat]:
 # Istio statistics
 # ---------------------------------------------------------------------------
 
+_ISTIO_API_VERSIONS = ("v1", "v1beta1", "v1alpha3")
+
+
 def _istio_count(custom: client.CustomObjectsApi, group: str,
                  namespace: str, plural: str) -> int:
-    return _count_custom(custom, group, ["v1", "v1beta1", "v1alpha3"], namespace, plural)
+    return _count_custom(custom, GVR(group, _ISTIO_API_VERSIONS, plural), namespace)
 
 
 def _mtls_mode(custom: client.CustomObjectsApi, namespace: str) -> str:
@@ -376,7 +378,7 @@ def get_service_entries(namespace_names: list[str]) -> list[ServiceEntryStat]:
     entries: list[ServiceEntryStat] = []
 
     for ns in namespace_names:
-        for version in ["v1", "v1beta1", "v1alpha3"]:
+        for version in _ISTIO_API_VERSIONS:
             try:
                 result = cast(dict[str, Any], custom.list_namespaced_custom_object(
                     group="networking.istio.io", version=version,

@@ -18,6 +18,7 @@ from rich.progress import (
 from rich.rule import Rule
 
 from . import kubectl, output_csv, output_table
+from .models import CliTool
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -38,9 +39,19 @@ class OutputFormat(str, Enum):
     csv = "csv"
 
 
-class CliTool(str, Enum):
-    kubectl = "kubectl"
-    oc = "oc"
+# ---------------------------------------------------------------------------
+# Shared command options
+# ---------------------------------------------------------------------------
+
+NamespaceOption = Annotated[str | None, typer.Option(
+    "--namespace", "-n",
+    help="Limit to one namespace.")]
+OutputOption = Annotated[OutputFormat, typer.Option(
+    "--output", "-o",
+    help="Output format: table (default) or csv.")]
+OutputDirOption = Annotated[Path | None, typer.Option(
+    "--output-dir",
+    help="Write output file(s) to this directory instead of stdout.")]
 
 
 @dataclass
@@ -93,10 +104,14 @@ def _global_options(
 def _bootstrap() -> None:
     try:
         kubectl.load_config(kubeconfig=_state.kubeconfig, context=_state.context)
-        kubectl.set_backend(_state.tool.value)
+        kubectl.set_backend(_state.tool)
     except Exception as e:
         console.print(f"[red]Cannot load kubeconfig:[/red] {e}")
         raise typer.Exit(1)
+
+
+def _warn_breakdown_ignored() -> None:
+    console.print("[yellow]Warning: --breakdown is only supported with --output table, ignoring.[/yellow]")
 
 
 def _emit(content: str, fmt: OutputFormat, name: str,
@@ -124,9 +139,7 @@ def _render(data, fmt: OutputFormat, name: str, output_dir: Path | None,
 
 @app.command()
 def crds(
-    namespace: Annotated[str | None, typer.Option(
-        "--namespace", "-n",
-        help="Limit to one namespace.")] = None,
+    namespace: NamespaceOption = None,
     breakdown: Annotated[bool, typer.Option(
         "--breakdown",
         help="Also show per-namespace instance matrix (table output only).")] = False,
@@ -139,18 +152,14 @@ def crds(
     include_empty: Annotated[bool, typer.Option(
         "--all",
         help="Include CRDs with zero instances (installed but unused).")] = False,
-    output: Annotated[OutputFormat, typer.Option(
-        "--output", "-o",
-        help="Output format: table (default) or csv.")] = OutputFormat.table,
-    output_dir: Annotated[Path | None, typer.Option(
-        "--output-dir",
-        help="Write output file(s) to this directory instead of stdout.")] = None,
+    output: OutputOption = OutputFormat.table,
+    output_dir: OutputDirOption = None,
 ) -> None:
     """CRD adoption rate across namespaces."""
     _bootstrap()
 
     if breakdown and output != OutputFormat.table:
-        console.print("[yellow]Warning: --breakdown is only supported with --output table, ignoring.[/yellow]")
+        _warn_breakdown_ignored()
 
     namespaces = kubectl.get_namespaces()
     ns_names = [namespace] if namespace else [ns.name for ns in namespaces]
@@ -179,15 +188,9 @@ def crds(
 
 @app.command()
 def adoption(
-    namespace: Annotated[str | None, typer.Option(
-        "--namespace", "-n",
-        help="Limit to one namespace.")] = None,
-    output: Annotated[OutputFormat, typer.Option(
-        "--output", "-o",
-        help="Output format: table (default) or csv.")] = OutputFormat.table,
-    output_dir: Annotated[Path | None, typer.Option(
-        "--output-dir",
-        help="Write output file(s) to this directory instead of stdout.")] = None,
+    namespace: NamespaceOption = None,
+    output: OutputOption = OutputFormat.table,
+    output_dir: OutputDirOption = None,
 ) -> None:
     """Adoption rate metrics per namespace."""
     _bootstrap()
@@ -220,15 +223,9 @@ def istio(
     policies: Annotated[bool, typer.Option(
         "--policies",
         help="Show security policies (mTLS, AuthorizationPolicies).")] = False,
-    namespace: Annotated[str | None, typer.Option(
-        "--namespace", "-n",
-        help="Limit to one namespace.")] = None,
-    output: Annotated[OutputFormat, typer.Option(
-        "--output", "-o",
-        help="Output format: table (default) or csv.")] = OutputFormat.table,
-    output_dir: Annotated[Path | None, typer.Option(
-        "--output-dir",
-        help="Write output file(s) to this directory instead of stdout.")] = None,
+    namespace: NamespaceOption = None,
+    output: OutputOption = OutputFormat.table,
+    output_dir: OutputDirOption = None,
 ) -> None:
     """Istio service mesh usage per namespace."""
     _bootstrap()
@@ -283,15 +280,11 @@ def istio(
 
 @app.command(name="all")
 def run_all(
-    namespace: Annotated[str | None, typer.Option(
-        "--namespace", "-n",
-        help="Limit to one namespace.")] = None,
+    namespace: NamespaceOption = None,
     breakdown: Annotated[bool, typer.Option(
         "--breakdown",
         help="Include per-namespace CRD instance matrix (table output only).")] = False,
-    output: Annotated[OutputFormat, typer.Option(
-        "--output", "-o",
-        help="Output format: table (default) or csv.")] = OutputFormat.table,
+    output: OutputOption = OutputFormat.table,
     output_dir: Annotated[Path | None, typer.Option(
         "--output-dir",
         help="Write output file(s) to this directory. Required for --output csv.")] = None,
@@ -304,7 +297,7 @@ def run_all(
         raise typer.Exit(1)
 
     if breakdown and output != OutputFormat.table:
-        console.print("[yellow]Warning: --breakdown is only supported with --output table, ignoring.[/yellow]")
+        _warn_breakdown_ignored()
 
     namespaces = kubectl.get_namespaces()
     if namespace:

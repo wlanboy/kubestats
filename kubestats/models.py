@@ -2,6 +2,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
+
+
+class CliTool(str, Enum):
+    """Which CLI backend a cluster is being queried through."""
+    kubectl = "kubectl"
+    oc = "oc"
+
+
+@dataclass(frozen=True)
+class GVR:
+    """A Kubernetes API group/plural, with the versions to try in order.
+
+    Some CRDs (VPA, Flux, Argo CD, OpenShift routes, Istio, ...) serve the
+    same resource under different versions depending on cluster age, so
+    callers probe `versions` in order and use the first that responds.
+    """
+    group: str
+    versions: tuple[str, ...]
+    plural: str
 
 
 @dataclass
@@ -26,6 +46,11 @@ class CRDStat:
     @property
     def namespace_count(self) -> int:
         return sum(1 for v in self.instances_by_namespace.values() if v > 0)
+
+    def adoption_pct(self, total_namespaces: int) -> float:
+        if total_namespaces == 0:
+            return 0.0
+        return round(self.namespace_count * 100 / total_namespaces, 1)
 
 
 @dataclass
@@ -65,6 +90,13 @@ class IstioNamespaceStat:
     peer_authentications: int
     authorization_policies: int
     mtls_mode: str          # STRICT | PERMISSIVE | DISABLE | none
+
+    @property
+    def coverage_pct(self) -> int | None:
+        """Sidecar injection coverage (sidecars / pods). None when the namespace has no pods."""
+        if self.pod_count == 0:
+            return None
+        return self.sidecar_count * 100 // self.pod_count
 
 
 @dataclass
