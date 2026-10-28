@@ -5,7 +5,7 @@ import logging
 from typing import Any, cast
 
 from kubernetes import client, config
-from kubernetes.client.rest import ApiException
+from kubernetes.client.exceptions import ApiException
 
 from kubestats.models import (
     GVR,
