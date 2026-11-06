@@ -7,9 +7,9 @@ requires-python = ">=3.14"
 license = {text = "MIT"}
 classifiers = ["Private :: Do Not Upload"]
 dependencies = [
-    "kubernetes>=37.0.1",
+    "kubernetes>=37.0.2",
     "rich>=15.0.0",
-    "typer>=0.27.3",
+    "typer>=0.28.0",
 ]
 
 [project.scripts]
@@ -26,7 +26,7 @@ packages = ["kubestats"]
 dev = [
     "pyright>=1.1.414",
     "pytest>=9.2.0",
-    "ruff>=0.17.3",
+    "ruff>=0.17.4",
 ]
 
 [tool.pytest.ini_options]
