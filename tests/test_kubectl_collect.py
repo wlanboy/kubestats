@@ -300,7 +300,7 @@ class TestListPages:
         assert kubectl._list_pages(MagicMock(return_value=page)) == [1, 2]
 
     def test_timeout_becomes_api_exception(self) -> None:
-        fn = MagicMock(side_effect=urllib3.exceptions.ReadTimeoutError(None, "/", "read timed out"))
+        fn = MagicMock(side_effect=urllib3.exceptions.ReadTimeoutError(MagicMock(), "/", "read timed out"))
         with pytest.raises(ApiException) as exc:
             kubectl._list_pages(fn)
         assert exc.value.status == 0
