@@ -137,7 +137,8 @@ uv run analytics --tool oc crds --breakdown
 Per-namespace adoption metrics — raw counts for key platform capabilities.
 
 ```bash
-uv run analytics adoption [--namespace NS] [--output table|csv] [--output-dir DIR]
+uv run analytics adoption [--namespace NS] [--probe-ignore NAME]...
+                          [--output table|csv] [--output-dir DIR]
 ```
 
 **Standard output (`kubectl`):**
@@ -165,7 +166,7 @@ The `ROUTES` and `DC` columns are **only shown when at least one namespace has d
 | Column | Source |
 | --- | --- |
 | `LIMITS` | pods with both CPU and memory limits set (`pods_with_limits / pod_count`) |
-| `PROBES` | pods where all containers have both a liveness and a readiness probe (`pods_with_probes / pod_count`) |
+| `PROBES` | pods where all containers have both a liveness and a readiness probe (`pods_with_probes / pod_count`). The check skips injected sidecars, by default `istio-proxy`, which has a readiness probe but no liveness probe. `--probe-ignore NAME` (repeatable) replaces that list, `--probe-ignore ""` checks every container |
 | `NETPOL` | at least one `NetworkPolicy` in the namespace |
 | `QUOTA` | at least one `ResourceQuota` in the namespace |
 | `LIMITRANGE` | at least one `LimitRange` in the namespace |
@@ -213,7 +214,8 @@ Istio service mesh usage. Without flags, shows namespace enrollment. Flags can b
 
 ```bash
 uv run analytics istio [--traffic] [--external] [--policies]
-                [--namespace NS] [--output table|csv] [--output-dir DIR]
+                [--namespace NS] [--mesh-root-namespace NS]
+                [--output table|csv] [--output-dir DIR]
 ```
 
 **Enrollment** (default):
@@ -221,15 +223,16 @@ uv run analytics istio [--traffic] [--external] [--policies]
 ```text
            Istio Namespace Enrollment
  NAMESPACE    INJECTION  SIDECARS  PODS  COVERAGE
- team-alpha   yes        8         8     100%
- team-beta    no         0         5       0%
- platform     yes        12        14     85%
- legacy       no         0         3       0%
+ team-alpha   sidecar     8         8     100%
+ team-beta    none        0         5       0%
+ platform     rev=stable  12        14     85%
+ legacy       disabled    0         3       0%
 ```
 
-- `INJECTION` — value of the `istio-injection` label on the namespace
-- `SIDECARS` — pods with an `istio-proxy` container running
-- `COVERAGE` — `sidecars / pods`
+- `INJECTION` — how the namespace joins the mesh, from its labels in Istio's order of precedence: `disabled` (`istio-injection=disabled`), `sidecar` (`istio-injection=enabled`), `rev=<revision>` (`istio.io/rev`), `ambient` (`istio.io/dataplane-mode=ambient`), otherwise `none`
+- `SIDECARS` — pods with an `istio-proxy` container, in `containers` or in `initContainers` (native sidecars)
+- `AMBIENT` — pods redirected by the ambient data plane (annotation `ambient.istio.io/redirection=enabled`); the column only appears when there are any
+- `COVERAGE` — `(sidecars + ambient pods) / pods`
 
 **`--traffic`** — VirtualServices, DestinationRules, Gateways, ServiceEntries, WorkloadEntries per namespace:
 
@@ -262,8 +265,10 @@ ServiceEntries register external services into the mesh — databases, third-par
  NAMESPACE    PeerAuthentication  AuthorizationPolicies  mTLS-MODE
  team-alpha   1                   3                      STRICT
  platform     1                   8                      STRICT
- team-beta    0                   0                      none
+ team-beta    0                   0                      STRICT (mesh)
 ```
+
+`mTLS-MODE` is the mode of the namespace's own PeerAuthentication without workload selector. Without one, or with mode `UNSET`, the mesh-wide policy from the root namespace applies and is marked `(mesh)`. The root namespace is `istio-system` unless set with `--mesh-root-namespace`. `none` means there is no policy at either level.
 
 **Examples:**
 
@@ -307,7 +312,8 @@ uv run analytics --tool oc istio --traffic
 Runs all reports sequentially. Collects data first (4 steps), then renders all 6 sections.
 
 ```bash
-uv run analytics all [--namespace NS] [--breakdown] [--output table|csv] [--output-dir DIR]
+uv run analytics all [--namespace NS] [--breakdown] [--probe-ignore NAME]...
+                     [--mesh-root-namespace NS] [--output table|csv] [--output-dir DIR]
 ```
 
 ```text
@@ -366,6 +372,10 @@ All commands support `--output table|csv`.
 
 - **table** (default) — rendered to the terminal with Rich; OpenShift-specific columns appear automatically when there is data
 - **csv** — one row per resource; always includes all fields (OpenShift fields are `0` on non-OpenShift clusters); streamed to stdout or written to `--output-dir`
+
+**Values that could not be fetched.** A 404 means the resource type is not installed and counts as `0`. Any other API error (missing RBAC permission, rate limit, server error) makes the value unknown rather than zero: the table shows `?`, the CSV an empty cell. For CRDs the totals become lower bounds (`5+?`), and the CSV column `fetch_errors` names the affected namespaces. After the report, a "Fetch errors" table on stderr lists namespace, metric and reason for each unknown value.
+
+**Requests.** kubestats lists each resource type once for all namespaces, in pages of 500 items, and groups the items by namespace. If RBAC grants access to only some namespaces, the cluster-wide list fails with 403 and kubestats sends one request per namespace instead. Each request times out after 30 seconds. A timeout counts as a fetch error, like any other API error. The `all` command lists pods once and uses the result for both the adoption and the Istio report.
 
 ```bash
 # stream CSV to stdout

@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterable
-from functools import partial
-from typing import Any, cast
+from dataclasses import dataclass, field
+from typing import Any
 
+import urllib3
 from kubernetes import client, config
 from kubernetes.client.exceptions import ApiException
 
@@ -35,7 +36,13 @@ class _FetchError(Exception):
 
 
 def _reason(e: ApiException) -> str:
+    if not e.status:  # transport error (timeout, connection refused, TLS)
+        return str(e.reason or "request failed").strip()
     return f"{e.status} {e.reason}".strip()
+
+
+def _error_text(e: Exception) -> str:
+    return _reason(e) if isinstance(e, ApiException) else str(e)
 
 
 def _collect[**P, T](errors: dict[str, str], metric: str, fn: Callable[P, T],
@@ -48,6 +55,134 @@ def _collect[**P, T](errors: dict[str, str], metric: str, fn: Callable[P, T],
     except ApiException as e:
         errors[metric] = _reason(e)
     return None
+
+# ---------------------------------------------------------------------------
+# Requests: timeout, pagination, cluster-wide listing
+# ---------------------------------------------------------------------------
+#
+# Every list call goes through _list_pages, which sets a timeout and fetches
+# page by page. Resources are listed once cluster-wide and grouped by
+# namespace; only if that is forbidden (RBAC limited to some namespaces) does
+# the code fall back to one request per namespace.
+
+REQUEST_TIMEOUT_SECONDS = 30.0
+_PAGE_SIZE = 500
+
+
+def _call(fn: Callable[..., Any], **kwargs: Any) -> Any:
+    """Call an API method with the request timeout.
+
+    Transport errors (timeout, connection refused) become an ApiException with
+    status 0, so callers handle them like any other non-404 API error.
+    """
+    try:
+        return fn(_request_timeout=REQUEST_TIMEOUT_SECONDS, **kwargs)
+    except urllib3.exceptions.HTTPError as e:
+        raise ApiException(status=0, reason=f"{type(e).__name__}: {e}") from e
+
+
+def _list_pages(fn: Callable[..., Any], **kwargs: Any) -> list[Any]:
+    """All items of a list call, fetched in pages of _PAGE_SIZE.
+
+    Works for typed responses (V1PodList, ...) and for the plain dicts the
+    CustomObjectsApi returns.
+    """
+    items: list[Any] = []
+    token: str | None = None
+    while True:
+        page = _call(fn, limit=_PAGE_SIZE, _continue=token, **kwargs)
+        if isinstance(page, dict):
+            items.extend(page.get("items") or [])
+            token = (page.get("metadata") or {}).get("continue")
+        else:
+            items.extend(page.items or [])
+            token = page.metadata._continue if page.metadata else None
+        if not token:
+            return items
+
+
+def _namespace_of(item: Any) -> str | None:
+    if isinstance(item, dict):
+        return (item.get("metadata") or {}).get("namespace")
+    return item.metadata.namespace
+
+
+@dataclass
+class NamespacedItems:
+    """Items of one resource type, grouped by namespace.
+
+    A namespace in `errors` could not be listed; its items are unknown.
+    """
+    items: dict[str, list[Any]] = field(default_factory=dict)
+    errors: dict[str, str] = field(default_factory=dict)
+
+    def get(self, namespace: str) -> list[Any]:
+        """Items in `namespace`. Raises _FetchError if it could not be listed."""
+        if namespace in self.errors:
+            raise _FetchError(self.errors[namespace])
+        return self.items.get(namespace, [])
+
+
+def _list_by_namespace(
+    namespaces: list[str],
+    list_all: Callable[[], list[Any]],
+    list_one: Callable[[str], list[Any]],
+    *,
+    label: str | None = None,
+) -> NamespacedItems:
+    """List a resource for `namespaces`: one cluster-wide request if possible.
+
+    Falls back to one request per namespace if the cluster-wide list is
+    forbidden (403) or only a single namespace is wanted. Both callables raise
+    ApiException; `label` prefixes recorded error reasons.
+    """
+    def fmt(e: Exception) -> str:
+        return f"{label}: {_error_text(e)}" if label else _error_text(e)
+
+    result = NamespacedItems()
+    if len(namespaces) > 1:
+        try:
+            items = list_all()
+        except ApiException as e:
+            if e.status != 403:
+                result.errors = dict.fromkeys(namespaces, fmt(e))
+                return result
+            logger.debug("Cluster-wide list forbidden%s, listing per namespace",
+                         f" for {label}" if label else "")
+        else:
+            wanted = set(namespaces)
+            for item in items:
+                ns = _namespace_of(item)
+                if ns in wanted:
+                    result.items.setdefault(ns, []).append(item)
+            return result
+
+    for ns in namespaces:
+        try:
+            result.items[ns] = list_one(ns)
+        except ApiException as e:
+            result.errors[ns] = fmt(e)
+    return result
+
+
+def _list_core(namespaces: list[str], list_all_fn: Callable[..., Any],
+               list_namespaced_fn: Callable[..., Any]) -> NamespacedItems:
+    """Group a built-in resource by namespace, e.g. pods via
+    list_pod_for_all_namespaces / list_namespaced_pod."""
+    return _list_by_namespace(
+        namespaces,
+        lambda: _list_pages(list_all_fn),
+        lambda ns: _list_pages(list_namespaced_fn, namespace=ns),
+    )
+
+
+def list_pods(namespace_names: list[str]) -> NamespacedItems:
+    """Pods per namespace. Pass the result to get_adoption_stats and
+    get_istio_stats to list pods only once."""
+    v1 = client.CoreV1Api()
+    return _list_core(namespace_names, v1.list_pod_for_all_namespaces,
+                      v1.list_namespaced_pod)
+
 
 # ---------------------------------------------------------------------------
 # Backend selection (kubectl vs oc / OpenShift)
@@ -88,10 +223,10 @@ def get_namespaces() -> list[NamespaceInfo]:
     if _backend == CliTool.oc:
         custom = client.CustomObjectsApi()
         try:
-            result = cast(dict[str, Any], custom.list_cluster_custom_object(
-                group="project.openshift.io", version="v1", plural="projects"
-            ))
-            items: list[Any] = result.get("items", [])
+            items: list[Any] = _list_pages(
+                custom.list_cluster_custom_object,
+                group="project.openshift.io", version="v1", plural="projects",
+            )
             if items:
                 return [
                     NamespaceInfo(
@@ -106,7 +241,7 @@ def get_namespaces() -> list[NamespaceInfo]:
     v1 = client.CoreV1Api()
     return [
         NamespaceInfo(name=ns.metadata.name, labels=ns.metadata.labels or {})
-        for ns in cast(Any, v1.list_namespace()).items
+        for ns in _list_pages(v1.list_namespace)
     ]
 
 
@@ -121,16 +256,14 @@ def _storage_version(crd) -> str:
     return crd.spec.versions[0].name if crd.spec.versions else "v1"
 
 
-def _record_crd_count(stat: CRDStat, key: str, list_fn: Callable[[], Any]) -> None:
-    """Store the instance count under `key`; 404 counts as zero, other errors as unknown."""
+def _list_pages_or_empty(fn: Callable[..., Any], **kwargs: Any) -> list[Any]:
+    """Like _list_pages; a 404 (resource type not installed) counts as empty."""
     try:
-        count = len(cast(dict[str, Any], list_fn()).get("items", []))
+        return _list_pages(fn, **kwargs)
     except ApiException as e:
-        if e.status != 404:
-            stat.fetch_errors[key] = _reason(e)
-        return
-    if count:
-        stat.instances_by_namespace[key] = count
+        if e.status == 404:
+            return []
+        raise
 
 
 def get_crd_stats(
@@ -147,7 +280,7 @@ def get_crd_stats(
     search_lower = search.lower() if search else None
     group_lower = group_filter.lower() if group_filter else None
 
-    for crd in cast(Any, ext.list_custom_resource_definition()).items:
+    for crd in _list_pages(ext.list_custom_resource_definition):
         spec = crd.spec
 
         if group_lower and group_lower not in spec.group.lower():
@@ -167,18 +300,28 @@ def get_crd_stats(
             namespaced=spec.scope == "Namespaced",
         )
 
+        gvp = {"group": spec.group, "version": version, "plural": spec.names.plural}
         if stat.namespaced:
-            for ns in namespace_names:
-                _record_crd_count(stat, ns, partial(
-                    custom.list_namespaced_custom_object,
-                    group=spec.group, version=version,
-                    namespace=ns, plural=spec.names.plural,
-                ))
+            listing = _list_by_namespace(
+                namespace_names,
+                lambda gvp=gvp: _list_pages_or_empty(
+                    custom.list_cluster_custom_object, **gvp),
+                lambda ns, gvp=gvp: _list_pages_or_empty(
+                    custom.list_namespaced_custom_object, namespace=ns, **gvp),
+            )
+            stat.fetch_errors.update(listing.errors)
+            for ns, items in listing.items.items():
+                if items:
+                    stat.instances_by_namespace[ns] = len(items)
         else:
-            _record_crd_count(stat, "(cluster)", partial(
-                custom.list_cluster_custom_object,
-                group=spec.group, version=version, plural=spec.names.plural,
-            ))
+            try:
+                count = len(_list_pages_or_empty(
+                    custom.list_cluster_custom_object, **gvp))
+            except ApiException as e:
+                stat.fetch_errors["(cluster)"] = _reason(e)
+            else:
+                if count:
+                    stat.instances_by_namespace["(cluster)"] = count
 
         # A CRD whose count is unknown somewhere is not "empty": keep it visible.
         if include_empty or stat.total_instances > 0 or stat.fetch_errors:
@@ -199,38 +342,49 @@ _OC_ROUTES = GVR("route.openshift.io", ("v1",), "routes")
 _OC_DEPLOYMENTCONFIGS = GVR("apps.openshift.io", ("v1",), "deploymentconfigs")
 
 
-def _list_custom(custom: client.CustomObjectsApi, gvr: GVR,
-                 namespace: str) -> list[dict[str, Any]] | None:
+def _list_custom_raw(custom: client.CustomObjectsApi, gvr: GVR,
+                     namespace: str | None = None) -> list[dict[str, Any]] | None:
     """Items of the first served version, or None if no version is installed (all 404).
 
-    Raises _FetchError on any other API error.
+    Lists cluster-wide when `namespace` is None. Raises ApiException on any
+    other API error.
     """
     for version in gvr.versions:
+        kwargs: dict[str, Any] = {"group": gvr.group, "version": version, "plural": gvr.plural}
         try:
-            result = cast(dict[str, Any], custom.list_namespaced_custom_object(
-                group=gvr.group, version=version, namespace=namespace, plural=gvr.plural,
-            ))
+            if namespace is None:
+                return _list_pages(custom.list_cluster_custom_object, **kwargs)
+            return _list_pages(custom.list_namespaced_custom_object,
+                               namespace=namespace, **kwargs)
         except ApiException as e:
-            if e.status == 404:
-                continue
-            raise _FetchError(f"{gvr.plural}.{gvr.group}: {_reason(e)}") from e
-        return result.get("items", [])
+            if e.status != 404:
+                raise
     return None
 
 
-def _items_custom(custom: client.CustomObjectsApi, gvr: GVR,
-                  namespace: str) -> list[dict[str, Any]]:
-    """Items; empty if the resource type is not installed. Raises _FetchError."""
-    return _list_custom(custom, gvr, namespace) or []
+def _list_custom(custom: client.CustomObjectsApi, gvr: GVR,
+                 namespace: str) -> list[dict[str, Any]] | None:
+    """Like _list_custom_raw for one namespace, but raises _FetchError."""
+    try:
+        return _list_custom_raw(custom, gvr, namespace)
+    except ApiException as e:
+        raise _FetchError(f"{gvr.plural}.{gvr.group}: {_reason(e)}") from e
 
 
-def _count_custom(custom: client.CustomObjectsApi, namespace: str, *gvrs: GVR) -> int:
-    """Summed instance count; 0 for types not installed. Raises _FetchError."""
-    return sum(len(_items_custom(custom, gvr, namespace)) for gvr in gvrs)
+def _list_custom_by_namespace(custom: client.CustomObjectsApi, gvr: GVR,
+                              namespaces: list[str]) -> NamespacedItems:
+    """Custom resources per namespace; empty if the type is not installed."""
+    return _list_by_namespace(
+        namespaces,
+        lambda: _list_custom_raw(custom, gvr) or [],
+        lambda ns: _list_custom_raw(custom, gvr, ns) or [],
+        label=f"{gvr.plural}.{gvr.group}",
+    )
 
 
-def _count_items(list_fn: Callable[..., Any], **kwargs: Any) -> int:
-    return len(cast(Any, list_fn(**kwargs)).items)
+def _count(namespace: str, *listings: NamespacedItems) -> int:
+    """Summed item count in `namespace`. Raises _FetchError if any listing failed there."""
+    return sum(len(listing.get(namespace)) for listing in listings)
 
 
 _DEFAULT_PROBE_IGNORE: frozenset[str] = frozenset({"istio-proxy"})
@@ -250,109 +404,117 @@ def _has_probes(pod: Any, ignore: Iterable[str] = _DEFAULT_PROBE_IGNORE) -> bool
     )
 
 
+def _has_limits(pod: Any) -> bool:
+    """True if every container sets CPU and memory limits."""
+    return all(
+        c.resources and c.resources.limits
+        and "cpu" in c.resources.limits
+        and "memory" in c.resources.limits
+        for c in pod.spec.containers
+    )
+
+
 def get_adoption_stats(
     namespace_names: list[str],
     *,
     probe_ignore: Iterable[str] = _DEFAULT_PROBE_IGNORE,
+    pods: NamespacedItems | None = None,
 ) -> list[AdoptionStat]:
+    """Adoption metrics per namespace.
+
+    Each resource type is listed once for all namespaces. Pass `pods` from
+    list_pods() to reuse a pod listing.
+    """
     v1 = client.CoreV1Api()
     apps_v1 = client.AppsV1Api()
     autoscaling = client.AutoscalingV2Api()
     networking = client.NetworkingV1Api()
-    custom = client.CustomObjectsApi()
-
     policy = client.PolicyV1Api()
+    custom = client.CustomObjectsApi()
+    names = namespace_names
+
+    if pods is None:
+        pods = list_pods(names)
+    # A failure on any of these skips the namespace.
+    net_policies = _list_core(names, networking.list_network_policy_for_all_namespaces,
+                              networking.list_namespaced_network_policy)
+    quotas = _list_core(names, v1.list_resource_quota_for_all_namespaces,
+                        v1.list_namespaced_resource_quota)
+    limit_ranges = _list_core(names, v1.list_limit_range_for_all_namespaces,
+                              v1.list_namespaced_limit_range)
+    deployments = _list_core(names, apps_v1.list_deployment_for_all_namespaces,
+                             apps_v1.list_namespaced_deployment)
+    statefulsets = _list_core(names, apps_v1.list_stateful_set_for_all_namespaces,
+                              apps_v1.list_namespaced_stateful_set)
+    ingresses = _list_core(names, networking.list_ingress_for_all_namespaces,
+                           networking.list_namespaced_ingress)
+    pvcs = _list_core(names, v1.list_persistent_volume_claim_for_all_namespaces,
+                      v1.list_namespaced_persistent_volume_claim)
+    service_accounts = _list_core(names, v1.list_service_account_for_all_namespaces,
+                                  v1.list_namespaced_service_account)
+    hpas = _list_core(names, autoscaling.list_horizontal_pod_autoscaler_for_all_namespaces,
+                      autoscaling.list_namespaced_horizontal_pod_autoscaler)
+    # A failure on any of these makes only the metric unknown.
+    pdbs = _list_core(names, policy.list_pod_disruption_budget_for_all_namespaces,
+                      policy.list_namespaced_pod_disruption_budget)
+    vpas = _list_custom_by_namespace(custom, _VPA, names)
+    helm_releases = _list_custom_by_namespace(custom, _HELM_RELEASES, names)
+    kustomizations = _list_custom_by_namespace(custom, _KUSTOMIZATIONS, names)
+    argocd_apps = _list_custom_by_namespace(custom, _ARGOCD_APPLICATIONS, names)
+    routes = dcs = None
+    if _backend == CliTool.oc:
+        routes = _list_custom_by_namespace(custom, _OC_ROUTES, names)
+        dcs = _list_custom_by_namespace(custom, _OC_DEPLOYMENTCONFIGS, names)
 
     stats: list[AdoptionStat] = []
 
-    for ns in namespace_names:
+    for ns in names:
         try:
-            pods: list[Any] = cast(Any, v1.list_namespaced_pod(namespace=ns)).items
-            pod_count = len(pods)
-            pods_with_limits = sum(
-                1 for pod in pods
-                if all(
-                    c.resources and c.resources.limits
-                    and "cpu" in (c.resources.limits or {})
-                    and "memory" in (c.resources.limits or {})
-                    for c in pod.spec.containers
-                )
-            )
-            pods_with_probes = sum(1 for pod in pods if _has_probes(pod, probe_ignore))
-
-            net_policies: list[Any] = cast(Any, networking.list_namespaced_network_policy(namespace=ns)).items
-            has_network_policy = bool(net_policies)
-
-            quotas: list[Any] = cast(Any, v1.list_namespaced_resource_quota(namespace=ns)).items
-            has_resource_quota = bool(quotas)
-
-            limit_ranges: list[Any] = cast(Any, v1.list_namespaced_limit_range(namespace=ns)).items
-            has_limit_range = bool(limit_ranges)
-
-            deployments: list[Any] = cast(Any, apps_v1.list_namespaced_deployment(namespace=ns)).items
-            deployment_count = len(deployments)
-            deployment_names = {d.metadata.name for d in deployments}
-
-            statefulsets: list[Any] = cast(Any, apps_v1.list_namespaced_stateful_set(namespace=ns)).items
-            statefulset_count = len(statefulsets)
-
-            ingresses: list[Any] = cast(Any, networking.list_namespaced_ingress(namespace=ns)).items
-            ingress_count = len(ingresses)
-
-            pvcs: list[Any] = cast(Any, v1.list_namespaced_persistent_volume_claim(namespace=ns)).items
-            pvc_count = len(pvcs)
-
-            service_accounts: list[Any] = cast(Any, v1.list_namespaced_service_account(namespace=ns)).items
-            serviceaccount_count = len(service_accounts)
-
-            errors: dict[str, str] = {}
-
-            pdb_count = _collect(errors, "pdb_count", _count_items,
-                                 policy.list_namespaced_pod_disruption_budget, namespace=ns)
-
-            hpas: list[Any] = cast(Any, autoscaling.list_namespaced_horizontal_pod_autoscaler(namespace=ns)).items
-            hpa_targets = {h.spec.scale_target_ref.name for h in hpas}
-            hpa_count = len(hpa_targets & deployment_names)
-
-            vpa_count = _collect(errors, "vpa_count", _count_custom, custom, ns, _VPA)
-            flux_count = _collect(errors, "flux_resources", _count_custom,
-                                  custom, ns, _HELM_RELEASES, _KUSTOMIZATIONS)
-            argocd_count = _collect(errors, "argocd_resources", _count_custom,
-                                    custom, ns, _ARGOCD_APPLICATIONS)
-
-            route_count: int | None = 0
-            dc_count: int | None = 0
-            if _backend == CliTool.oc:
-                route_count = _collect(errors, "route_count", _count_custom,
-                                       custom, ns, _OC_ROUTES)
-                dc_count = _collect(errors, "deploymentconfig_count", _count_custom,
-                                    custom, ns, _OC_DEPLOYMENTCONFIGS)
-
-            stats.append(AdoptionStat(
-                namespace=ns,
-                pod_count=pod_count,
-                pods_with_limits=pods_with_limits,
-                pods_with_probes=pods_with_probes,
-                has_network_policy=has_network_policy,
-                has_resource_quota=has_resource_quota,
-                has_limit_range=has_limit_range,
-                deployment_count=deployment_count,
-                statefulset_count=statefulset_count,
-                ingress_count=ingress_count,
-                pvc_count=pvc_count,
-                serviceaccount_count=serviceaccount_count,
-                pdb_count=pdb_count,
-                hpa_count=hpa_count,
-                vpa_count=vpa_count,
-                flux_resources=flux_count,
-                argocd_resources=argocd_count,
-                route_count=route_count,
-                deploymentconfig_count=dc_count,
-                fetch_errors=errors,
-            ))
-
-        except ApiException as e:
+            ns_pods = pods.get(ns)
+            ns_deployments = deployments.get(ns)
+            deployment_names = {d.metadata.name for d in ns_deployments}
+            hpa_targets = {h.spec.scale_target_ref.name for h in hpas.get(ns)}
+            core = {
+                "has_network_policy": bool(net_policies.get(ns)),
+                "has_resource_quota": bool(quotas.get(ns)),
+                "has_limit_range": bool(limit_ranges.get(ns)),
+                "statefulset_count": len(statefulsets.get(ns)),
+                "ingress_count": len(ingresses.get(ns)),
+                "pvc_count": len(pvcs.get(ns)),
+                "serviceaccount_count": len(service_accounts.get(ns)),
+            }
+        except _FetchError as e:
             logger.warning("Skipping namespace %s: %s", ns, e)
+            continue
+
+        errors: dict[str, str] = {}
+        pdb_count = _collect(errors, "pdb_count", _count, ns, pdbs)
+        vpa_count = _collect(errors, "vpa_count", _count, ns, vpas)
+        flux_count = _collect(errors, "flux_resources", _count,
+                              ns, helm_releases, kustomizations)
+        argocd_count = _collect(errors, "argocd_resources", _count, ns, argocd_apps)
+        route_count: int | None = 0
+        dc_count: int | None = 0
+        if routes is not None and dcs is not None:
+            route_count = _collect(errors, "route_count", _count, ns, routes)
+            dc_count = _collect(errors, "deploymentconfig_count", _count, ns, dcs)
+
+        stats.append(AdoptionStat(
+            namespace=ns,
+            pod_count=len(ns_pods),
+            pods_with_limits=sum(1 for pod in ns_pods if _has_limits(pod)),
+            pods_with_probes=sum(1 for pod in ns_pods if _has_probes(pod, probe_ignore)),
+            deployment_count=len(ns_deployments),
+            pdb_count=pdb_count,
+            hpa_count=len(hpa_targets & deployment_names),
+            vpa_count=vpa_count,
+            flux_resources=flux_count,
+            argocd_resources=argocd_count,
+            route_count=route_count,
+            deploymentconfig_count=dc_count,
+            fetch_errors=errors,
+            **core,
+        ))
 
     return stats
 
@@ -425,9 +587,11 @@ def get_istio_stats(
     namespace_infos: list[NamespaceInfo],
     *,
     mesh_root_namespace: str = DEFAULT_MESH_ROOT_NAMESPACE,
+    pods: NamespacedItems | None = None,
 ) -> list[IstioNamespaceStat]:
-    v1 = client.CoreV1Api()
+    """Istio usage per namespace. Pass `pods` from list_pods() to reuse a pod listing."""
     custom = client.CustomObjectsApi()
+    names = [ns.name for ns in namespace_infos]
     stats: list[IstioNamespaceStat] = []
 
     # The PeerAuthentication without selector in the root namespace applies mesh-wide.
@@ -439,27 +603,34 @@ def get_istio_stats(
     except _FetchError as e:
         mesh_error = f"mesh-wide policy in {mesh_root_namespace}: {e}"
 
+    if pods is None:
+        pods = list_pods(names)
+    counted = {
+        metric: _list_custom_by_namespace(custom, gvr, names)
+        for metric, gvr in _ISTIO_COUNTED.items()
+    }
+    peer_auth_listing = _list_custom_by_namespace(custom, _PEER_AUTHENTICATIONS, names)
+
     for ns_info in namespace_infos:
         ns = ns_info.name
 
         try:
-            pods: list[Any] = cast(Any, v1.list_namespaced_pod(namespace=ns)).items
-        except ApiException as e:
-            logger.warning("Skipping namespace %s: %s", ns, _reason(e))
+            ns_pods = pods.get(ns)
+        except _FetchError as e:
+            logger.warning("Skipping namespace %s: %s", ns, e)
             continue
 
-        sidecar_count = sum(1 for pod in pods if _has_sidecar(pod))
-        ambient_count = sum(1 for pod in pods if _is_ambient(pod) and not _has_sidecar(pod))
+        sidecar_count = sum(1 for pod in ns_pods if _has_sidecar(pod))
+        ambient_count = sum(1 for pod in ns_pods if _is_ambient(pod) and not _has_sidecar(pod))
 
         errors: dict[str, str] = {}
 
         counts = {
-            metric: _collect(errors, metric, _count_custom, custom, ns, gvr)
-            for metric, gvr in _ISTIO_COUNTED.items()
+            metric: _collect(errors, metric, _count, ns, listing)
+            for metric, listing in counted.items()
         }
 
-        peer_auths = _collect(errors, "peer_authentications", _items_custom,
-                              custom, _PEER_AUTHENTICATIONS, ns)
+        peer_auths = _collect(errors, "peer_authentications", peer_auth_listing.get, ns)
         mtls_mode: str | None = None
         if peer_auths is not None:
             if _namespace_wide_mtls(peer_auths) is None and mesh_error:
@@ -470,7 +641,7 @@ def get_istio_stats(
         stats.append(IstioNamespaceStat(
             namespace=ns,
             injection_mode=_injection_mode(ns_info.labels),
-            pod_count=len(pods),
+            pod_count=len(ns_pods),
             sidecar_count=sidecar_count,
             ambient_count=ambient_count,
             virtual_services=counts["virtual_services"],
@@ -493,11 +664,12 @@ def get_istio_stats(
 
 def get_service_entries(namespace_names: list[str]) -> list[ServiceEntryStat]:
     custom = client.CustomObjectsApi()
+    listing = _list_custom_by_namespace(custom, _SERVICE_ENTRIES, namespace_names)
     entries: list[ServiceEntryStat] = []
 
     for ns in namespace_names:
         try:
-            items = _list_custom(custom, _SERVICE_ENTRIES, ns) or []
+            items = listing.get(ns)
         except _FetchError as e:
             logger.warning("Cannot list ServiceEntries in namespace %s: %s", ns, e)
             continue

@@ -88,7 +88,7 @@ def adoption_stat_oc() -> AdoptionStat:
 def istio_stat() -> IstioNamespaceStat:
     return IstioNamespaceStat(
         namespace="prod",
-        injection_enabled=True,
+        injection_mode="sidecar",
         pod_count=8,
         sidecar_count=6,
         virtual_services=2,
@@ -106,7 +106,7 @@ def istio_stat() -> IstioNamespaceStat:
 def istio_stat_no_injection() -> IstioNamespaceStat:
     return IstioNamespaceStat(
         namespace="dev",
-        injection_enabled=False,
+        injection_mode="none",
         pod_count=4,
         sidecar_count=0,
         virtual_services=0,

@@ -10,6 +10,7 @@ from kubestats.kubectl import (
     IstioNamespaceStat,
     ServiceEntryStat,
 )
+from kubestats.models import FetchError
 
 
 class TestHelpers:
@@ -233,3 +234,61 @@ class TestRenderServiceEntries:
     def test_empty(self) -> None:
         result = output_table.render_service_entries([])
         assert result.row_count == 0
+
+
+def _cell(table: Table, header: str, row: int = 0) -> str:
+    idx = next(i for i, c in enumerate(table.columns) if str(c.header).startswith(header))
+    return str(table.columns[idx]._cells[row])
+
+
+class TestUnknownValues:
+    def test_unknown_adoption_count_shows_question_mark(
+            self, adoption_stat: AdoptionStat) -> None:
+        adoption_stat.flux_resources = None
+        assert _cell(output_table.render_adoption([adoption_stat]), "FLUX") == "?"
+
+    def test_unknown_oc_count_still_shows_oc_columns(
+            self, adoption_stat: AdoptionStat) -> None:
+        adoption_stat.route_count = None
+        table = output_table.render_adoption([adoption_stat])
+        assert _cell(table, "ROUTES") == "?"
+
+    def test_crd_with_errors_marked_as_lower_bound(self, crd_stat: CRDStat) -> None:
+        crd_stat.fetch_errors = {"ns-x": "403 Forbidden"}
+        assert _cell(output_table.render_crds([crd_stat], 5), "INSTANCES") == "5+?"
+
+    def test_crd_breakdown_unknown_namespace(self, crd_stat: CRDStat) -> None:
+        crd_stat.fetch_errors = {"ns-x": "403 Forbidden"}
+        table = output_table.render_crds_per_namespace([crd_stat], ["ns-a", "ns-x"])
+        assert table.columns[1]._cells == ["3", "?"]
+
+    def test_unknown_mtls_mode(self, istio_stat: IstioNamespaceStat) -> None:
+        istio_stat.mtls_mode = None
+        assert "?" in _cell(output_table.render_istio_policies([istio_stat]), "mTLS-MODE")
+
+    def test_mesh_mtls_mode_colored_like_base_mode(
+            self, istio_stat: IstioNamespaceStat) -> None:
+        istio_stat.mtls_mode = "STRICT (mesh)"
+        cell = _cell(output_table.render_istio_policies([istio_stat]), "mTLS-MODE")
+        assert cell == "[green]STRICT (mesh)[/green]"
+
+    def test_fetch_error_table(self) -> None:
+        table = output_table.render_fetch_errors([
+            FetchError("b", "vpa_count", "403 Forbidden"),
+            FetchError("a", "flux_resources", "500 Internal"),
+        ])
+        assert table.columns[0]._cells == ["a", "b"]
+
+
+class TestIstioInjectionColumn:
+    def test_shows_mode(self, istio_stat: IstioNamespaceStat) -> None:
+        istio_stat.injection_mode = "rev=stable"
+        cell = _cell(output_table.render_istio([istio_stat]), "INJECTION")
+        assert "rev=stable" in cell
+
+    def test_ambient_column_only_when_used(self, istio_stat: IstioNamespaceStat) -> None:
+        headers = [str(c.header) for c in output_table.render_istio([istio_stat]).columns]
+        assert "AMBIENT" not in headers
+        istio_stat.ambient_count = 2
+        headers = [str(c.header) for c in output_table.render_istio([istio_stat]).columns]
+        assert "AMBIENT" in headers

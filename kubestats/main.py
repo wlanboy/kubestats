@@ -1,6 +1,7 @@
 """kubectl/oc analytics — TUI entry point."""
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -18,7 +19,7 @@ from rich.progress import (
 from rich.rule import Rule
 
 from . import kubectl, output_csv, output_table
-from .models import CliTool
+from .models import CliTool, FetchError
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -53,6 +54,14 @@ OutputOption = Annotated[OutputFormat, typer.Option(
 OutputDirOption = Annotated[Path | None, typer.Option(
     "--output-dir",
     help="Write output file(s) to this directory instead of stdout.")]
+ProbeIgnoreOption = Annotated[list[str] | None, typer.Option(
+    "--probe-ignore",
+    help="Container name to skip in the PROBES check (injected sidecars). "
+         "Repeatable; replaces the default istio-proxy. "
+         "Pass an empty string to check every container.")]
+MeshRootOption = Annotated[str, typer.Option(
+    "--mesh-root-namespace",
+    help="Istio root namespace whose PeerAuthentication applies mesh-wide.")]
 
 
 @dataclass
@@ -126,6 +135,23 @@ def _emit(content: str, fmt: OutputFormat, name: str,
         print(content, end="")
 
 
+def _probe_ignore(names: list[str] | None) -> set[str]:
+    if names is None:
+        return {"istio-proxy"}
+    return {n for n in names if n}
+
+
+def _report_fetch_errors(*stat_lists: Iterable) -> None:
+    """List every metric that could not be fetched (shown as '?' / empty cell above)."""
+    errors: list[FetchError] = [e for stats in stat_lists for s in stats for e in s.error_rows()]
+    if errors:
+        err_console.print(output_table.render_fetch_errors(errors))
+
+
+def _crd_breakdown_namespaces(stats) -> list[str]:
+    return sorted({ns for s in stats for ns in (*s.instances_by_namespace, *s.fetch_errors)})
+
+
 def _render(data, fmt: OutputFormat, name: str, output_dir: Path | None,
             table_fn, csv_fn) -> None:
     if fmt == OutputFormat.table:
@@ -177,10 +203,12 @@ def crds(
     if output == OutputFormat.table:
         console.print(output_table.render_crds(stats, total))
         if breakdown:
-            ns_with_instances = sorted({ns for s in stats for ns in s.instances_by_namespace})
-            console.print(output_table.render_crds_per_namespace(stats, ns_with_instances))
+            console.print(output_table.render_crds_per_namespace(
+                stats, _crd_breakdown_namespaces(stats)))
     else:
         _emit(output_csv.render_crds(stats, total), output, "crds", output_dir)
+
+    _report_fetch_errors(stats)
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +218,7 @@ def crds(
 @app.command()
 def adoption(
     namespace: NamespaceOption = None,
+    probe_ignore: ProbeIgnoreOption = None,
     output: OutputOption = OutputFormat.table,
     output_dir: OutputDirOption = None,
 ) -> None:
@@ -200,13 +229,14 @@ def adoption(
     ns_names = [namespace] if namespace else [ns.name for ns in namespaces]
 
     with err_console.status("Collecting adoption metrics…"):
-        stats = kubectl.get_adoption_stats(ns_names)
+        stats = kubectl.get_adoption_stats(ns_names, probe_ignore=_probe_ignore(probe_ignore))
 
     _render(
         stats, output, "adoption", output_dir,
         output_table.render_adoption,
         output_csv.render_adoption,
     )
+    _report_fetch_errors(stats)
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +255,7 @@ def istio(
         "--policies",
         help="Show security policies (mTLS, AuthorizationPolicies).")] = False,
     namespace: NamespaceOption = None,
+    mesh_root_namespace: MeshRootOption = kubectl.DEFAULT_MESH_ROOT_NAMESPACE,
     output: OutputOption = OutputFormat.table,
     output_dir: OutputDirOption = None,
 ) -> None:
@@ -241,7 +272,7 @@ def istio(
     stats: list = []
     if show_enrollment or traffic or policies:
         with err_console.status("Collecting Istio statistics…"):
-            stats = kubectl.get_istio_stats(namespaces)
+            stats = kubectl.get_istio_stats(namespaces, mesh_root_namespace=mesh_root_namespace)
 
     if show_enrollment:
         _render(
@@ -274,6 +305,8 @@ def istio(
             output_csv.render_service_entries,
         )
 
+    _report_fetch_errors(stats)
+
 
 # ---------------------------------------------------------------------------
 # all command
@@ -285,6 +318,8 @@ def run_all(
     breakdown: Annotated[bool, typer.Option(
         "--breakdown",
         help="Include per-namespace CRD instance matrix (table output only).")] = False,
+    probe_ignore: ProbeIgnoreOption = None,
+    mesh_root_namespace: MeshRootOption = kubectl.DEFAULT_MESH_ROOT_NAMESPACE,
     output: OutputOption = OutputFormat.table,
     output_dir: Annotated[Path | None, typer.Option(
         "--output-dir",
@@ -325,17 +360,21 @@ def run_all(
         transient=False,
     ) as progress:
 
-        def collect(label: str, key: str, fn, *args):
+        def collect(label: str, key: str, fn, *args, **kwargs):
             tid = progress.add_task(f"[dim]{label}[/dim]", total=None)
-            data = fn(*args)
+            data = fn(*args, **kwargs)
             progress.update(tid, description=f"[green]✓[/green] {label}")
             progress.stop_task(tid)
             results[key] = data
 
-        collect("[1/4] CRD statistics",     "crds",    kubectl.get_crd_stats, ns_names)
-        collect("[2/4] Adoption metrics",   "adoption", kubectl.get_adoption_stats, ns_names)
-        collect("[3/4] Istio stats",        "istio",   kubectl.get_istio_stats, namespaces)
-        collect("[4/4] Service entries",    "entries", kubectl.get_service_entries, ns_names)
+        collect("[1/5] CRD statistics",     "crds",    kubectl.get_crd_stats, ns_names)
+        # Listed once, shared by adoption and Istio.
+        collect("[2/5] Pods",               "pods",    kubectl.list_pods, ns_names)
+        collect("[3/5] Adoption metrics",   "adoption", kubectl.get_adoption_stats, ns_names,
+                probe_ignore=_probe_ignore(probe_ignore), pods=results["pods"])
+        collect("[4/5] Istio stats",        "istio",   kubectl.get_istio_stats, namespaces,
+                mesh_root_namespace=mesh_root_namespace, pods=results["pods"])
+        collect("[5/5] Service entries",    "entries", kubectl.get_service_entries, ns_names)
 
     crd_stats      = results["crds"]
     adoption_stats = results["adoption"]
@@ -348,6 +387,8 @@ def run_all(
     else:  # csv — one file per report (output_dir guaranteed by early check above)
         assert output_dir is not None
         _csv_all(crd_stats, total_ns, adoption_stats, istio_stats, entries, output_dir)
+
+    _report_fetch_errors(crd_stats, adoption_stats, istio_stats)
 
     if output_dir and output != OutputFormat.table:
         written = sorted(output_dir.glob(f"*.{output.value}"))
@@ -372,9 +413,9 @@ def _table_all(crd_stats, total_ns, adoption_stats, istio_stats, entries,
         console.print(table)
 
     if breakdown:
-        all_ns = sorted({ns for s in crd_stats for ns in s.instances_by_namespace})
         console.print(Rule("[bold]CRD Instances per Namespace[/bold]"))
-        console.print(output_table.render_crds_per_namespace(crd_stats, all_ns))
+        console.print(output_table.render_crds_per_namespace(
+            crd_stats, _crd_breakdown_namespaces(crd_stats)))
 
 
 def _csv_all(crd_stats, total_ns, adoption_stats, istio_stats, entries,

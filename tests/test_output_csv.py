@@ -127,10 +127,10 @@ class TestRenderAdoption:
 
 
 class TestRenderIstio:
-    def test_returns_all_12_fields(self, istio_stat: IstioNamespaceStat) -> None:
+    def test_returns_all_14_fields(self, istio_stat: IstioNamespaceStat) -> None:
         rows = _parse(output_csv.render_istio([istio_stat]))
         assert len(rows) == 1
-        assert len(rows[0]) == 12
+        assert len(rows[0]) == 14
 
     def test_values(self, istio_stat: IstioNamespaceStat) -> None:
         rows = _parse(output_csv.render_istio([istio_stat]))
@@ -185,3 +185,26 @@ class TestRenderServiceEntries:
     def test_empty(self) -> None:
         rows = _parse(output_csv.render_service_entries([]))
         assert rows == []
+
+
+class TestUnknownValues:
+    def test_unknown_adoption_count_is_empty_cell(self, adoption_stat: AdoptionStat) -> None:
+        adoption_stat.flux_resources = None
+        adoption_stat.fetch_errors = {"flux_resources": "403 Forbidden"}
+        rows = _parse(output_csv.render_adoption([adoption_stat]))
+        assert rows[0]["flux_resources"] == ""
+        assert rows[0]["argocd_resources"] == "1"
+
+    def test_unknown_mtls_is_empty_cell(self, istio_stat: IstioNamespaceStat) -> None:
+        istio_stat.mtls_mode = None
+        rows = _parse(output_csv.render_istio_policies([istio_stat]))
+        assert rows[0]["mtls_mode"] == ""
+
+    def test_crd_fetch_errors_column(self, crd_stat: CRDStat) -> None:
+        crd_stat.fetch_errors = {"ns-x": "403 Forbidden"}
+        rows = _parse(output_csv.render_crds([crd_stat], 5))
+        assert rows[0]["fetch_errors"] == "ns-x: 403 Forbidden"
+
+    def test_crd_without_errors_has_empty_column(self, crd_stat: CRDStat) -> None:
+        rows = _parse(output_csv.render_crds([crd_stat], 5))
+        assert rows[0]["fetch_errors"] == ""
