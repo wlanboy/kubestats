@@ -9,7 +9,7 @@ classifiers = ["Private :: Do Not Upload"]
 dependencies = [
     "kubernetes>=37.0.2",
     "rich>=15.0.0",
-    "typer>=0.28.0",
+    "typer>=0.29.1",
 ]
 
 [project.scripts]
@@ -26,7 +26,7 @@ packages = ["kubestats"]
 dev = [
     "pyright>=1.1.414",
     "pytest>=9.2.0",
-    "ruff>=0.17.4",
+    "ruff>=0.17.5",
 ]
 
 [tool.pytest.ini_options]
