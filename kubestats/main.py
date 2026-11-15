@@ -29,7 +29,8 @@ app = typer.Typer(
     help="Kubernetes / OpenShift adoption and mesh statistics — per namespace.",
     add_completion=False,
 )
-console = Console()
+console = Console()  # report data: tables
+err_console = Console(stderr=True)  # status, progress, warnings, errors
 
 VERSION = "0.1.0"
 
@@ -106,12 +107,12 @@ def _bootstrap() -> None:
         kubectl.load_config(kubeconfig=_state.kubeconfig, context=_state.context)
         kubectl.set_backend(_state.tool)
     except Exception as e:  # noqa: BLE001 - CLI boundary: report any config error as a friendly message
-        console.print(f"[red]Cannot load kubeconfig:[/red] {e}")
+        err_console.print(f"[red]Cannot load kubeconfig:[/red] {e}")
         raise typer.Exit(1)
 
 
 def _warn_breakdown_ignored() -> None:
-    console.print("[yellow]Warning: --breakdown is only supported with --output table, ignoring.[/yellow]")
+    err_console.print("[yellow]Warning: --breakdown is only supported with --output table, ignoring.[/yellow]")
 
 
 def _emit(content: str, fmt: OutputFormat, name: str,
@@ -165,7 +166,7 @@ def crds(
     ns_names = [namespace] if namespace else [ns.name for ns in namespaces]
     total = len(ns_names)
 
-    with console.status("Collecting CRD statistics…"):
+    with err_console.status("Collecting CRD statistics…"):
         stats = kubectl.get_crd_stats(
             ns_names,
             include_empty=include_empty,
@@ -198,7 +199,7 @@ def adoption(
     namespaces = kubectl.get_namespaces()
     ns_names = [namespace] if namespace else [ns.name for ns in namespaces]
 
-    with console.status("Collecting adoption metrics…"):
+    with err_console.status("Collecting adoption metrics…"):
         stats = kubectl.get_adoption_stats(ns_names)
 
     _render(
@@ -239,7 +240,7 @@ def istio(
 
     stats: list = []
     if show_enrollment or traffic or policies:
-        with console.status("Collecting Istio statistics…"):
+        with err_console.status("Collecting Istio statistics…"):
             stats = kubectl.get_istio_stats(namespaces)
 
     if show_enrollment:
@@ -265,7 +266,7 @@ def istio(
 
     if external:
         ns_names = [ns.name for ns in namespaces]
-        with console.status("Collecting ServiceEntries…"):
+        with err_console.status("Collecting ServiceEntries…"):
             entries = kubectl.get_service_entries(ns_names)
         _render(
             entries, output, "istio-external", output_dir,
@@ -293,7 +294,7 @@ def run_all(
     _bootstrap()
 
     if output == OutputFormat.csv and output_dir is None:
-        console.print("[red]--output-dir is required for --output csv with 'all'[/red]")
+        err_console.print("[red]--output-dir is required for --output csv with 'all'[/red]")
         raise typer.Exit(1)
 
     if breakdown and output != OutputFormat.table:
@@ -305,7 +306,7 @@ def run_all(
     ns_names = [ns.name for ns in namespaces]
     total_ns = len(ns_names)
 
-    console.print(Panel(
+    err_console.print(Panel(
         f"[bold]{_state.tool.value} analytics[/bold] — all reports\n"
         f"Namespaces: [cyan]{total_ns}[/cyan]  "
         f"Output: [cyan]{output.value}[/cyan]"
@@ -320,7 +321,7 @@ def run_all(
         SpinnerColumn(),
         TextColumn("{task.description}"),
         TimeElapsedColumn(),
-        console=console,
+        console=err_console,
         transient=False,
     ) as progress:
 
@@ -350,9 +351,9 @@ def run_all(
 
     if output_dir and output != OutputFormat.table:
         written = sorted(output_dir.glob(f"*.{output.value}"))
-        console.print(f"\n[bold]Reports written to {output_dir}/[/bold]")
+        err_console.print(f"\n[bold]Reports written to {output_dir}/[/bold]")
         for f in written:
-            console.print(f"  [green]{f.name}[/green]")
+            err_console.print(f"  [green]{f.name}[/green]")
 
 
 def _table_all(crd_stats, total_ns, adoption_stats, istio_stats, entries,

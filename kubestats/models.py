@@ -24,6 +24,14 @@ class GVR:
     plural: str
 
 
+@dataclass(frozen=True)
+class FetchError:
+    """A metric that could not be fetched, so its value is unknown rather than zero."""
+    namespace: str
+    metric: str
+    reason: str
+
+
 @dataclass
 class NamespaceInfo:
     name: str
@@ -38,6 +46,8 @@ class CRDStat:
     plural: str
     namespaced: bool
     instances_by_namespace: dict[str, int] = field(default_factory=dict)
+    # namespace -> reason, for namespaces whose instance count is unknown
+    fetch_errors: dict[str, str] = field(default_factory=dict)
 
     @property
     def total_instances(self) -> int:
@@ -51,6 +61,9 @@ class CRDStat:
         if total_namespaces == 0:
             return 0.0
         return round(self.namespace_count * 100 / total_namespaces, 1)
+
+    def error_rows(self) -> list[FetchError]:
+        return [FetchError(ns, self.name, reason) for ns, reason in self.fetch_errors.items()]
 
 
 @dataclass
@@ -67,36 +80,57 @@ class AdoptionStat:
     ingress_count: int
     pvc_count: int
     serviceaccount_count: int
-    pdb_count: int
+    # Counts that are None could not be fetched; see fetch_errors.
+    pdb_count: int | None
     hpa_count: int
-    vpa_count: int
-    flux_resources: int     # HelmReleases + Kustomizations
-    argocd_resources: int   # Applications
-    route_count: int = 0              # OpenShift Routes
-    deploymentconfig_count: int = 0   # OpenShift DeploymentConfigs
+    vpa_count: int | None
+    flux_resources: int | None    # HelmReleases + Kustomizations
+    argocd_resources: int | None  # Applications
+    route_count: int | None = 0             # OpenShift Routes
+    deploymentconfig_count: int | None = 0  # OpenShift DeploymentConfigs
+    # metric (field name) -> reason
+    fetch_errors: dict[str, str] = field(default_factory=dict)
+
+    def error_rows(self) -> list[FetchError]:
+        return [FetchError(self.namespace, metric, reason)
+                for metric, reason in self.fetch_errors.items()]
 
 
 @dataclass
 class IstioNamespaceStat:
     namespace: str
-    injection_enabled: bool
+    injection_mode: str     # sidecar | rev=<revision> | ambient | disabled | none
     pod_count: int
     sidecar_count: int
-    virtual_services: int
-    destination_rules: int
-    gateways: int
-    service_entries: int
-    workload_entries: int
-    peer_authentications: int
-    authorization_policies: int
-    mtls_mode: str          # STRICT | PERMISSIVE | DISABLE | none
+    # Counts and mtls_mode that are None could not be fetched; see fetch_errors.
+    virtual_services: int | None
+    destination_rules: int | None
+    gateways: int | None
+    service_entries: int | None
+    workload_entries: int | None
+    peer_authentications: int | None
+    authorization_policies: int | None
+    # STRICT | PERMISSIVE | DISABLE | none, with " (mesh)" suffix when the
+    # mode comes from the mesh-wide policy in the root namespace
+    mtls_mode: str | None
+    ambient_count: int = 0  # pods redirected by the ambient data plane
+    # metric (field name) -> reason
+    fetch_errors: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def injection_enabled(self) -> bool:
+        return self.injection_mode not in ("none", "disabled")
 
     @property
     def coverage_pct(self) -> int | None:
-        """Sidecar injection coverage (sidecars / pods). None when the namespace has no pods."""
+        """Mesh coverage ((sidecars + ambient pods) / pods). None when the namespace has no pods."""
         if self.pod_count == 0:
             return None
-        return self.sidecar_count * 100 // self.pod_count
+        return (self.sidecar_count + self.ambient_count) * 100 // self.pod_count
+
+    def error_rows(self) -> list[FetchError]:
+        return [FetchError(self.namespace, metric, reason)
+                for metric, reason in self.fetch_errors.items()]
 
 
 @dataclass

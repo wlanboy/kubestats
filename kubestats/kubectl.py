@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Iterable
 from typing import Any, cast
 
 from kubernetes import client, config
@@ -18,6 +19,33 @@ from kubestats.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Error handling
+# ---------------------------------------------------------------------------
+#
+# A 404 means "resource type not installed" and counts as zero. Any other API
+# error (403, 429, 5xx, ...) means the value is unknown: the metric becomes
+# None and the reason is recorded in the stat's fetch_errors.
+
+class _FetchError(Exception):
+    """A non-404 API error, carrying a short human-readable reason."""
+
+
+def _reason(e: ApiException) -> str:
+    return f"{e.status} {e.reason}".strip()
+
+
+def _collect[T](errors: dict[str, str], metric: str, fn: Callable[[], T]) -> T | None:
+    """Run fn; on an API error record the reason under `metric` and return None."""
+    try:
+        return fn()
+    except _FetchError as e:
+        errors[metric] = str(e)
+    except ApiException as e:
+        errors[metric] = _reason(e)
+    return None
 
 # ---------------------------------------------------------------------------
 # Backend selection (kubectl vs oc / OpenShift)
@@ -125,30 +153,29 @@ def get_crd_stats(
             namespaced=spec.scope == "Namespaced",
         )
 
+        def record(key: str, list_fn: Callable[[], Any]) -> None:
+            try:
+                count = len(cast(dict[str, Any], list_fn()).get("items", []))
+            except ApiException as e:
+                if e.status != 404:
+                    stat.fetch_errors[key] = _reason(e)
+                return
+            if count:
+                stat.instances_by_namespace[key] = count
+
         if stat.namespaced:
             for ns in namespace_names:
-                try:
-                    result = cast(dict[str, Any], custom.list_namespaced_custom_object(
-                        group=spec.group, version=version,
-                        namespace=ns, plural=spec.names.plural,
-                    ))
-                    count = len(result.get("items", []))
-                    if count:
-                        stat.instances_by_namespace[ns] = count
-                except ApiException:
-                    pass
-        else:
-            try:
-                result = cast(dict[str, Any], custom.list_cluster_custom_object(
-                    group=spec.group, version=version, plural=spec.names.plural,
+                record(ns, lambda ns=ns: custom.list_namespaced_custom_object(
+                    group=spec.group, version=version,
+                    namespace=ns, plural=spec.names.plural,
                 ))
-                count = len(result.get("items", []))
-                if count:
-                    stat.instances_by_namespace["(cluster)"] = count
-            except ApiException:
-                pass
+        else:
+            record("(cluster)", lambda: custom.list_cluster_custom_object(
+                group=spec.group, version=version, plural=spec.names.plural,
+            ))
 
-        if include_empty or stat.total_instances > 0:
+        # A CRD whose count is unknown somewhere is not "empty": keep it visible.
+        if include_empty or stat.total_instances > 0 or stat.fetch_errors:
             stats.append(stat)
 
     return sorted(stats, key=lambda s: s.total_instances, reverse=True)
@@ -166,20 +193,52 @@ _OC_ROUTES = GVR("route.openshift.io", ("v1",), "routes")
 _OC_DEPLOYMENTCONFIGS = GVR("apps.openshift.io", ("v1",), "deploymentconfigs")
 
 
-def _count_custom(custom: client.CustomObjectsApi, gvr: GVR, namespace: str) -> int:
+def _list_custom(custom: client.CustomObjectsApi, gvr: GVR,
+                 namespace: str) -> list[dict[str, Any]] | None:
+    """Items of the first served version, or None if no version is installed (all 404).
+
+    Raises _FetchError on any other API error.
+    """
     for version in gvr.versions:
         try:
             result = cast(dict[str, Any], custom.list_namespaced_custom_object(
                 group=gvr.group, version=version, namespace=namespace, plural=gvr.plural,
             ))
-            return len(result.get("items", []))
         except ApiException as e:
             if e.status == 404:
                 continue
-    return 0
+            raise _FetchError(f"{gvr.plural}.{gvr.group}: {_reason(e)}") from e
+        return result.get("items", [])
+    return None
 
 
-def get_adoption_stats(namespace_names: list[str]) -> list[AdoptionStat]:
+def _count_custom(custom: client.CustomObjectsApi, gvr: GVR, namespace: str) -> int:
+    """Instance count; 0 if the resource type is not installed. Raises _FetchError."""
+    return len(_list_custom(custom, gvr, namespace) or [])
+
+
+_DEFAULT_PROBE_IGNORE: frozenset[str] = frozenset({"istio-proxy"})
+
+
+def _has_probes(pod: Any, ignore: Iterable[str] = _DEFAULT_PROBE_IGNORE) -> bool:
+    """True if every container except injected sidecars has liveness and readiness probes.
+
+    Injected sidecars such as istio-proxy ship with a readiness probe only, so
+    checking them would mark every meshed pod as "without probes". A pod made
+    up only of ignored containers counts as without probes.
+    """
+    skip = set(ignore)
+    containers = [c for c in (pod.spec.containers or []) if c.name not in skip]
+    return bool(containers) and all(
+        c.liveness_probe and c.readiness_probe for c in containers
+    )
+
+
+def get_adoption_stats(
+    namespace_names: list[str],
+    *,
+    probe_ignore: Iterable[str] = _DEFAULT_PROBE_IGNORE,
+) -> list[AdoptionStat]:
     v1 = client.CoreV1Api()
     apps_v1 = client.AppsV1Api()
     autoscaling = client.AutoscalingV2Api()
@@ -203,13 +262,7 @@ def get_adoption_stats(namespace_names: list[str]) -> list[AdoptionStat]:
                     for c in pod.spec.containers
                 )
             )
-            pods_with_probes = sum(
-                1 for pod in pods
-                if all(
-                    c.liveness_probe and c.readiness_probe
-                    for c in pod.spec.containers
-                )
-            )
+            pods_with_probes = sum(1 for pod in pods if _has_probes(pod, probe_ignore))
 
             net_policies: list[Any] = cast(Any, networking.list_namespaced_network_policy(namespace=ns)).items
             has_network_policy = bool(net_policies)
@@ -236,32 +289,30 @@ def get_adoption_stats(namespace_names: list[str]) -> list[AdoptionStat]:
             service_accounts: list[Any] = cast(Any, v1.list_namespaced_service_account(namespace=ns)).items
             serviceaccount_count = len(service_accounts)
 
-            pdb_count = 0
-            try:
-                pdb_count = len(cast(Any,
-                    policy.list_namespaced_pod_disruption_budget(namespace=ns)
-                ).items)
-            except ApiException:
-                pass
+            errors: dict[str, str] = {}
+
+            pdb_count = _collect(errors, "pdb_count", lambda: len(cast(Any,
+                policy.list_namespaced_pod_disruption_budget(namespace=ns)
+            ).items))
 
             hpas: list[Any] = cast(Any, autoscaling.list_namespaced_horizontal_pod_autoscaler(namespace=ns)).items
             hpa_targets = {h.spec.scale_target_ref.name for h in hpas}
             hpa_count = len(hpa_targets & deployment_names)
 
-            vpa_count = _count_custom(custom, _VPA, ns)
+            def count(metric: str, *gvrs: GVR) -> int | None:
+                return _collect(errors, metric, lambda: sum(
+                    _count_custom(custom, gvr, ns) for gvr in gvrs  # noqa: B023 - called immediately
+                ))
 
-            flux_count = (
-                _count_custom(custom, _HELM_RELEASES, ns)
-                + _count_custom(custom, _KUSTOMIZATIONS, ns)
-            )
+            vpa_count = count("vpa_count", _VPA)
+            flux_count = count("flux_resources", _HELM_RELEASES, _KUSTOMIZATIONS)
+            argocd_count = count("argocd_resources", _ARGOCD_APPLICATIONS)
 
-            argocd_count = _count_custom(custom, _ARGOCD_APPLICATIONS, ns)
-
-            route_count = 0
-            dc_count = 0
+            route_count: int | None = 0
+            dc_count: int | None = 0
             if _backend == CliTool.oc:
-                route_count = _count_custom(custom, _OC_ROUTES, ns)
-                dc_count = _count_custom(custom, _OC_DEPLOYMENTCONFIGS, ns)
+                route_count = count("route_count", _OC_ROUTES)
+                dc_count = count("deploymentconfig_count", _OC_DEPLOYMENTCONFIGS)
 
             stats.append(AdoptionStat(
                 namespace=ns,
@@ -283,6 +334,7 @@ def get_adoption_stats(namespace_names: list[str]) -> list[AdoptionStat]:
                 argocd_resources=argocd_count,
                 route_count=route_count,
                 deploymentconfig_count=dc_count,
+                fetch_errors=errors,
             ))
 
         except ApiException as e:
@@ -296,74 +348,121 @@ def get_adoption_stats(namespace_names: list[str]) -> list[AdoptionStat]:
 # ---------------------------------------------------------------------------
 
 _ISTIO_API_VERSIONS = ("v1", "v1beta1", "v1alpha3")
+_PEER_AUTHENTICATIONS = GVR("security.istio.io", ("v1", "v1beta1"), "peerauthentications")
+_SERVICE_ENTRIES = GVR("networking.istio.io", _ISTIO_API_VERSIONS, "serviceentries")
+DEFAULT_MESH_ROOT_NAMESPACE = "istio-system"
 
 
-def _istio_count(custom: client.CustomObjectsApi, group: str,
-                 namespace: str, plural: str) -> int:
-    return _count_custom(custom, GVR(group, _ISTIO_API_VERSIONS, plural), namespace)
-
-
-def _mtls_mode(custom: client.CustomObjectsApi, namespace: str) -> str:
-    for version in ["v1", "v1beta1"]:
-        try:
-            result = cast(dict[str, Any], custom.list_namespaced_custom_object(
-                group="security.istio.io", version=version,
-                namespace=namespace, plural="peerauthentications",
-            ))
-            mtls_items: list[dict[str, Any]] = result.get("items", [])
-            if not mtls_items:
-                return "none"
-            # Prefer the namespace-wide policy (no workload selector)
-            for item in mtls_items:
-                if not item.get("spec", {}).get("selector"):
-                    return item.get("spec", {}).get("mtls", {}).get("mode", "none")
-            return mtls_items[0].get("spec", {}).get("mtls", {}).get("mode", "none")
-        except ApiException as e:
-            if e.status == 404:
-                continue
+def _injection_mode(labels: dict[str, str]) -> str:
+    """How the namespace joins the mesh, following Istio's label precedence."""
+    injection = labels.get("istio-injection")
+    if injection == "disabled":
+        return "disabled"
+    if injection == "enabled":
+        return "sidecar"
+    if revision := labels.get("istio.io/rev"):
+        return f"rev={revision}"
+    if labels.get("istio.io/dataplane-mode") == "ambient":
+        return "ambient"
     return "none"
 
 
-def get_istio_stats(namespace_infos: list[NamespaceInfo]) -> list[IstioNamespaceStat]:
+def _has_sidecar(pod: Any) -> bool:
+    """istio-proxy in containers, or in initContainers (native sidecars)."""
+    containers = (pod.spec.containers or []) + (pod.spec.init_containers or [])
+    return any(c.name == "istio-proxy" for c in containers)
+
+
+def _is_ambient(pod: Any) -> bool:
+    annotations = pod.metadata.annotations or {}
+    return annotations.get("ambient.istio.io/redirection") == "enabled"
+
+
+def _namespace_wide_mtls(items: list[dict[str, Any]]) -> str | None:
+    """Mode of the PeerAuthentication without workload selector; None if absent or UNSET."""
+    for item in items:
+        spec = item.get("spec") or {}
+        if not spec.get("selector"):
+            mode = (spec.get("mtls") or {}).get("mode")
+            return mode if mode and mode != "UNSET" else None
+    return None
+
+
+def _resolve_mtls(items: list[dict[str, Any]], mesh_mode: str | None) -> str:
+    """The namespace's own policy wins; otherwise the mesh-wide one, marked "(mesh)"."""
+    if own := _namespace_wide_mtls(items):
+        return own
+    if mesh_mode:
+        return f"{mesh_mode} (mesh)"
+    return "none"
+
+
+def get_istio_stats(
+    namespace_infos: list[NamespaceInfo],
+    *,
+    mesh_root_namespace: str = DEFAULT_MESH_ROOT_NAMESPACE,
+) -> list[IstioNamespaceStat]:
     v1 = client.CoreV1Api()
     custom = client.CustomObjectsApi()
     stats: list[IstioNamespaceStat] = []
 
+    # The PeerAuthentication without selector in the root namespace applies mesh-wide.
+    mesh_mode: str | None = None
+    mesh_error: str | None = None
+    try:
+        mesh_mode = _namespace_wide_mtls(
+            _list_custom(custom, _PEER_AUTHENTICATIONS, mesh_root_namespace) or [])
+    except _FetchError as e:
+        mesh_error = f"mesh-wide policy in {mesh_root_namespace}: {e}"
+
     for ns_info in namespace_infos:
         ns = ns_info.name
-        injection_enabled = ns_info.labels.get("istio-injection") == "enabled"
 
         try:
             pods: list[Any] = cast(Any, v1.list_namespaced_pod(namespace=ns)).items
-        except ApiException:
+        except ApiException as e:
+            logger.warning("Skipping namespace %s: %s", ns, _reason(e))
             continue
 
-        pod_count = len(pods)
-        sidecar_count = sum(
-            1 for pod in pods
-            if any(c.name == "istio-proxy" for c in (pod.spec.containers or []))
-        )
+        sidecar_count = sum(1 for pod in pods if _has_sidecar(pod))
+        ambient_count = sum(1 for pod in pods if _is_ambient(pod) and not _has_sidecar(pod))
+
+        errors: dict[str, str] = {}
+
+        def count(metric: str, group: str, plural: str) -> int | None:
+            gvr = GVR(group, _ISTIO_API_VERSIONS, plural)
+            return _collect(errors, metric, lambda: _count_custom(custom, gvr, ns))  # noqa: B023
+
+        peer_auths = _collect(errors, "peer_authentications",
+                              lambda: _list_custom(custom, _PEER_AUTHENTICATIONS, ns) or [])  # noqa: B023
+        mtls_mode: str | None = None
+        if peer_auths is not None:
+            if _namespace_wide_mtls(peer_auths) is None and mesh_error:
+                errors["mtls_mode"] = mesh_error
+            else:
+                mtls_mode = _resolve_mtls(peer_auths, mesh_mode)
 
         stats.append(IstioNamespaceStat(
             namespace=ns,
-            injection_enabled=injection_enabled,
-            pod_count=pod_count,
+            injection_mode=_injection_mode(ns_info.labels),
+            pod_count=len(pods),
             sidecar_count=sidecar_count,
-            virtual_services=_istio_count(
-                custom, "networking.istio.io", ns, "virtualservices"),
-            destination_rules=_istio_count(
-                custom, "networking.istio.io", ns, "destinationrules"),
-            gateways=_istio_count(
-                custom, "networking.istio.io", ns, "gateways"),
-            service_entries=_istio_count(
-                custom, "networking.istio.io", ns, "serviceentries"),
-            workload_entries=_istio_count(
-                custom, "networking.istio.io", ns, "workloadentries"),
-            peer_authentications=_istio_count(
-                custom, "security.istio.io", ns, "peerauthentications"),
-            authorization_policies=_istio_count(
-                custom, "security.istio.io", ns, "authorizationpolicies"),
-            mtls_mode=_mtls_mode(custom, ns),
+            ambient_count=ambient_count,
+            virtual_services=count(
+                "virtual_services", "networking.istio.io", "virtualservices"),
+            destination_rules=count(
+                "destination_rules", "networking.istio.io", "destinationrules"),
+            gateways=count(
+                "gateways", "networking.istio.io", "gateways"),
+            service_entries=count(
+                "service_entries", "networking.istio.io", "serviceentries"),
+            workload_entries=count(
+                "workload_entries", "networking.istio.io", "workloadentries"),
+            peer_authentications=None if peer_auths is None else len(peer_auths),
+            authorization_policies=count(
+                "authorization_policies", "security.istio.io", "authorizationpolicies"),
+            mtls_mode=mtls_mode,
+            fetch_errors=errors,
         ))
 
     return stats
@@ -378,28 +477,23 @@ def get_service_entries(namespace_names: list[str]) -> list[ServiceEntryStat]:
     entries: list[ServiceEntryStat] = []
 
     for ns in namespace_names:
-        for version in _ISTIO_API_VERSIONS:
-            try:
-                result = cast(dict[str, Any], custom.list_namespaced_custom_object(
-                    group="networking.istio.io", version=version,
-                    namespace=ns, plural="serviceentries",
-                ))
-                for item in result.get("items", []):
-                    spec = item.get("spec", {})
-                    ports = [
-                        f"{p.get('number')}/{p.get('protocol', 'TCP')}"
-                        for p in spec.get("ports", [])
-                    ]
-                    entries.append(ServiceEntryStat(
-                        namespace=ns,
-                        name=item["metadata"]["name"],
-                        hosts=spec.get("hosts", []),
-                        resolution=spec.get("resolution", "NONE"),
-                        ports=ports,
-                    ))
-                break   # found a working version
-            except ApiException as e:
-                if e.status == 404:
-                    continue
+        try:
+            items = _list_custom(custom, _SERVICE_ENTRIES, ns) or []
+        except _FetchError as e:
+            logger.warning("Cannot list ServiceEntries in namespace %s: %s", ns, e)
+            continue
+        for item in items:
+            spec = item.get("spec", {})
+            ports = [
+                f"{p.get('number')}/{p.get('protocol', 'TCP')}"
+                for p in spec.get("ports", [])
+            ]
+            entries.append(ServiceEntryStat(
+                namespace=ns,
+                name=item["metadata"]["name"],
+                hosts=spec.get("hosts", []),
+                resolution=spec.get("resolution", "NONE"),
+                ports=ports,
+            ))
 
     return entries
