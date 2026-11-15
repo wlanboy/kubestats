@@ -402,7 +402,7 @@ uv run analytics --tool oc all --output csv --output-dir ./openshift-report/
 
 ## Requirements
 
-- Python >= 3.12
+- Python >= 3.14
 - Valid kubeconfig (`~/.kube/config`) or in-cluster service account
   - For Kubernetes: `kubectl cluster-info` should work
   - For OpenShift: `oc login <cluster-url>` populates the kubeconfig automatically

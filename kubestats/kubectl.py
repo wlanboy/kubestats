@@ -202,16 +202,22 @@ def set_backend(backend: CliTool) -> None:
 # ---------------------------------------------------------------------------
 
 def load_config(kubeconfig: str | None = None, context: str | None = None) -> None:
-    """Load kubeconfig (in-cluster first, then local ~/.kube/config).
+    """Load the cluster configuration.
+
+    An explicit kubeconfig or context always wins. Without either, the
+    in-cluster configuration is tried first, then the local ~/.kube/config.
 
     Args:
         kubeconfig: Path to a kubeconfig file. Defaults to ~/.kube/config.
         context:    Kubeconfig context to activate. Defaults to the current context.
     """
-    try:
-        config.load_incluster_config()
-    except config.ConfigException:
-        config.load_kube_config(config_file=kubeconfig, context=context)
+    if kubeconfig is None and context is None:
+        try:
+            config.load_incluster_config()
+            return
+        except config.ConfigException:
+            pass
+    config.load_kube_config(config_file=kubeconfig, context=context)
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +249,33 @@ def get_namespaces() -> list[NamespaceInfo]:
         NamespaceInfo(name=ns.metadata.name, labels=ns.metadata.labels or {})
         for ns in _list_pages(v1.list_namespace)
     ]
+
+
+def get_namespace(name: str) -> NamespaceInfo:
+    """Read a single namespace, for users without cluster-wide list rights.
+
+    In oc mode the Project is tried first. A 404 (namespace does not exist) is
+    raised; any other API error is tolerated and yields empty labels.
+    """
+    if _backend == CliTool.oc:
+        custom = client.CustomObjectsApi()
+        try:
+            item = _call(custom.get_cluster_custom_object,
+                         group="project.openshift.io", version="v1",
+                         plural="projects", name=name)
+            return NamespaceInfo(name=name, labels=item["metadata"].get("labels") or {})
+        except ApiException:
+            logger.debug("Cannot read OpenShift Project %s, falling back to namespace", name)
+
+    v1 = client.CoreV1Api()
+    try:
+        ns = _call(v1.read_namespace, name=name)
+    except ApiException as e:
+        if e.status == 404:
+            raise ApiException(status=404, reason=f"Namespace {name!r} not found") from e
+        logger.warning("Cannot read namespace %s (%s), labels unknown", name, _reason(e))
+        return NamespaceInfo(name=name, labels={})
+    return NamespaceInfo(name=name, labels=ns.metadata.labels or {})
 
 
 # ---------------------------------------------------------------------------

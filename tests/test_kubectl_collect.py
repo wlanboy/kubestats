@@ -371,3 +371,59 @@ class TestSharedPods:
         # One cluster-wide request per Istio resource type, none per namespace.
         custom.list_namespaced_custom_object.assert_called_once()  # mesh root policy
         assert custom.list_cluster_custom_object.call_count == len(kubectl._ISTIO_COUNTED) + 1
+
+
+# ---------------------------------------------------------------------------
+# Config loading and single-namespace read
+# ---------------------------------------------------------------------------
+
+class TestLoadConfig:
+    @pytest.fixture()
+    def loaders(self, monkeypatch: pytest.MonkeyPatch) -> tuple[MagicMock, MagicMock]:
+        incluster, kubeconfig = MagicMock(), MagicMock()
+        monkeypatch.setattr(kubectl.config, "load_incluster_config", incluster)
+        monkeypatch.setattr(kubectl.config, "load_kube_config", kubeconfig)
+        return incluster, kubeconfig
+
+    def test_in_cluster_without_explicit_options(self, loaders) -> None:
+        incluster, kubeconfig = loaders
+        kubectl.load_config()
+        incluster.assert_called_once()
+        kubeconfig.assert_not_called()
+
+    def test_falls_back_to_kubeconfig_outside_cluster(self, loaders) -> None:
+        incluster, kubeconfig = loaders
+        incluster.side_effect = kubectl.config.ConfigException("not in cluster")
+        kubectl.load_config()
+        kubeconfig.assert_called_once_with(config_file=None, context=None)
+
+    @pytest.mark.parametrize("kwargs", [{"kubeconfig": "/tmp/other"}, {"context": "other"}])
+    def test_explicit_options_skip_in_cluster(self, loaders, kwargs) -> None:
+        incluster, kubeconfig = loaders
+        kubectl.load_config(**kwargs)
+        incluster.assert_not_called()
+        kubeconfig.assert_called_once()
+
+
+class TestGetNamespace:
+    @pytest.fixture()
+    def core(self, monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+        core = MagicMock()
+        monkeypatch.setattr(kubectl.client, "CoreV1Api", lambda: core)
+        monkeypatch.setattr(kubectl, "_backend", kubectl.CliTool.kubectl)
+        return core
+
+    def test_reads_labels(self, core: MagicMock) -> None:
+        core.read_namespace.return_value = SimpleNamespace(
+            metadata=SimpleNamespace(labels={"istio-injection": "enabled"}))
+        assert kubectl.get_namespace("prod") == NamespaceInfo(
+            name="prod", labels={"istio-injection": "enabled"})
+
+    def test_forbidden_yields_empty_labels(self, core: MagicMock) -> None:
+        core.read_namespace.side_effect = _api_error(403, "Forbidden")
+        assert kubectl.get_namespace("prod") == NamespaceInfo(name="prod", labels={})
+
+    def test_not_found_is_raised(self, core: MagicMock) -> None:
+        core.read_namespace.side_effect = _api_error(404, "Not Found")
+        with pytest.raises(ApiException, match="'nope' not found"):
+            kubectl.get_namespace("nope")

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from kubernetes.client.exceptions import ApiException
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import (
@@ -19,7 +20,7 @@ from rich.progress import (
 from rich.rule import Rule
 
 from . import kubectl, output_csv, output_table
-from .models import CliTool, FetchError
+from .models import CliTool, FetchError, NamespaceInfo
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -120,6 +121,20 @@ def _bootstrap() -> None:
         raise typer.Exit(1)
 
 
+def _namespaces(namespace: str | None) -> list[NamespaceInfo]:
+    """The namespaces to evaluate. With --namespace only that one is read, so
+    users without cluster-wide list rights on namespaces can still run reports."""
+    if namespace:
+        try:
+            return [kubectl.get_namespace(namespace)]
+        except ApiException as e:
+            if e.status != 404:
+                raise
+            err_console.print(f"[red]Namespace not found:[/red] {namespace}")
+            raise typer.Exit(1) from None
+    return kubectl.get_namespaces()
+
+
 def _warn_breakdown_ignored() -> None:
     err_console.print("[yellow]Warning: --breakdown is only supported with --output table, ignoring.[/yellow]")
 
@@ -188,8 +203,7 @@ def crds(
     if breakdown and output != OutputFormat.table:
         _warn_breakdown_ignored()
 
-    namespaces = kubectl.get_namespaces()
-    ns_names = [namespace] if namespace else [ns.name for ns in namespaces]
+    ns_names = [ns.name for ns in _namespaces(namespace)]
     total = len(ns_names)
 
     with err_console.status("Collecting CRD statistics…"):
@@ -225,8 +239,7 @@ def adoption(
     """Adoption rate metrics per namespace."""
     _bootstrap()
 
-    namespaces = kubectl.get_namespaces()
-    ns_names = [namespace] if namespace else [ns.name for ns in namespaces]
+    ns_names = [ns.name for ns in _namespaces(namespace)]
 
     with err_console.status("Collecting adoption metrics…"):
         stats = kubectl.get_adoption_stats(ns_names, probe_ignore=_probe_ignore(probe_ignore))
@@ -262,9 +275,7 @@ def istio(
     """Istio service mesh usage per namespace."""
     _bootstrap()
 
-    namespaces = kubectl.get_namespaces()
-    if namespace:
-        namespaces = [ns for ns in namespaces if ns.name == namespace]
+    namespaces = _namespaces(namespace)
 
     # Default: show enrollment when no specific flag is given
     show_enrollment = not any([traffic, external, policies])
@@ -335,9 +346,7 @@ def run_all(
     if breakdown and output != OutputFormat.table:
         _warn_breakdown_ignored()
 
-    namespaces = kubectl.get_namespaces()
-    if namespace:
-        namespaces = [ns for ns in namespaces if ns.name == namespace]
+    namespaces = _namespaces(namespace)
     ns_names = [ns.name for ns in namespaces]
     total_ns = len(ns_names)
 
@@ -438,7 +447,12 @@ def _csv_all(crd_stats, total_ns, adoption_stats, istio_stats, entries,
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    app()
+    try:
+        app()
+    except ApiException as e:  # CLI boundary: API errors outside per-metric collection
+        detail = f"{e.status} {e.reason}".strip() if e.status else str(e.reason or e)
+        err_console.print(f"[red]Kubernetes API error:[/red] {detail}")
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":
