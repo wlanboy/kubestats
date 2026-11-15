@@ -7,9 +7,12 @@ from rich.table import Table
 from .models import (
     AdoptionStat,
     CRDStat,
+    FetchError,
     IstioNamespaceStat,
     ServiceEntryStat,
 )
+
+UNKNOWN = "?"   # value could not be fetched (see the fetch error list)
 
 _MTLS_COLOR: dict[str, str] = {
     "STRICT": "green",
@@ -17,6 +20,11 @@ _MTLS_COLOR: dict[str, str] = {
     "DISABLE": "red",
     "none": "dim",
 }
+
+
+def _n(value: object) -> str:
+    """Cell text for a value; None (not fetched) becomes '?'."""
+    return UNKNOWN if value is None else str(value)
 
 
 def _pct(part: int, total: int) -> str:
@@ -41,7 +49,7 @@ def _table(title: str, first_column: str) -> Table:
 def _add_rows(table: Table, stats: list, *fields: str) -> None:
     """Add one row per stat, projecting each onto `fields` in order."""
     for s in stats:
-        table.add_row(*(str(getattr(s, f)) for f in fields))
+        table.add_row(*(_n(getattr(s, f)) for f in fields))
 
 
 # ---------------------------------------------------------------------------
@@ -55,11 +63,13 @@ def render_crds(stats: list[CRDStat], total_namespaces: int) -> Table:
     table.add_column("ADOPTION", justify="right")
 
     for s in stats:
+        # With fetch errors the counts are lower bounds: "3+?" instead of "3".
+        unknown = f"+{UNKNOWN}" if s.fetch_errors else ""
         table.add_row(
             s.name,
-            f"{s.namespace_count} / {total_namespaces}",
-            str(s.total_instances),
-            _pct(s.namespace_count, total_namespaces),
+            f"{s.namespace_count}{unknown} / {total_namespaces}",
+            f"{s.total_instances}{unknown}",
+            _pct(s.namespace_count, total_namespaces) + unknown,
         )
 
     return table
@@ -73,7 +83,10 @@ def render_crds_per_namespace(stats: list[CRDStat],
         table.add_column(f"{s.kind}\n[dim]{s.group}[/dim]", justify="right")
 
     for ns in namespace_names:
-        row = [ns] + [str(s.instances_by_namespace.get(ns, 0)) for s in stats]
+        row = [ns] + [
+            UNKNOWN if ns in s.fetch_errors else str(s.instances_by_namespace.get(ns, 0))
+            for s in stats
+        ]
         table.add_row(*row)
 
     return table
@@ -84,7 +97,7 @@ def render_crds_per_namespace(stats: list[CRDStat],
 # ---------------------------------------------------------------------------
 
 def render_adoption(stats: list[AdoptionStat]) -> Table:
-    show_oc = any(s.route_count or s.deploymentconfig_count for s in stats)
+    show_oc = any(s.route_count != 0 or s.deploymentconfig_count != 0 for s in stats)
 
     table = _table("Adoption Rate per Namespace", "NAMESPACE")
     table.add_column("PODS", justify="right")
@@ -121,14 +134,14 @@ def render_adoption(stats: list[AdoptionStat]) -> Table:
             str(s.ingress_count),
             str(s.pvc_count),
             str(s.serviceaccount_count),
-            str(s.pdb_count),
+            _n(s.pdb_count),
             str(s.hpa_count),
-            str(s.vpa_count),
-            str(s.flux_resources),
-            str(s.argocd_resources),
+            _n(s.vpa_count),
+            _n(s.flux_resources),
+            _n(s.argocd_resources),
         ]
         if show_oc:
-            row += [str(s.route_count), str(s.deploymentconfig_count)]
+            row += [_n(s.route_count), _n(s.deploymentconfig_count)]
         table.add_row(*row)
 
     return table
@@ -140,20 +153,27 @@ def render_adoption(stats: list[AdoptionStat]) -> Table:
 
 def render_istio(stats: list[IstioNamespaceStat]) -> Table:
     table = _table("Istio Namespace Enrollment", "NAMESPACE")
+    show_ambient = any(s.ambient_count for s in stats)
+
     table.add_column("INJECTION", justify="center")
     table.add_column("SIDECARS", justify="right")
+    if show_ambient:
+        table.add_column("AMBIENT", justify="right")
     table.add_column("PODS", justify="right")
     table.add_column("COVERAGE", justify="right")
 
     for s in stats:
         coverage = "n/a" if s.coverage_pct is None else f"{s.coverage_pct}%"
-        table.add_row(
+        color = "green" if s.injection_enabled else "red"
+        row = [
             s.namespace,
-            _yn(s.injection_enabled),
+            f"[{color}]{s.injection_mode}[/{color}]",
             str(s.sidecar_count),
-            str(s.pod_count),
-            coverage,
-        )
+        ]
+        if show_ambient:
+            row.append(str(s.ambient_count))
+        row += [str(s.pod_count), coverage]
+        table.add_row(*row)
 
     return table
 
@@ -187,12 +207,14 @@ def render_istio_policies(stats: list[IstioNamespaceStat]) -> Table:
     table.add_column("mTLS-MODE", justify="center")
 
     for s in stats:
-        color = _MTLS_COLOR.get(s.mtls_mode, "white")
+        mode = _n(s.mtls_mode)
+        # "STRICT (mesh)" is colored like "STRICT"
+        color = _MTLS_COLOR.get(mode.split(" ", 1)[0], "white")
         table.add_row(
             s.namespace,
-            str(s.peer_authentications),
-            str(s.authorization_policies),
-            f"[{color}]{s.mtls_mode}[/{color}]",
+            _n(s.peer_authentications),
+            _n(s.authorization_policies),
+            f"[{color}]{mode}[/{color}]",
         )
 
     return table
@@ -217,5 +239,21 @@ def render_service_entries(entries: list[ServiceEntryStat]) -> Table:
             e.resolution,
             ", ".join(e.ports),
         )
+
+    return table
+
+
+# ---------------------------------------------------------------------------
+# Fetch errors
+# ---------------------------------------------------------------------------
+
+def render_fetch_errors(errors: list[FetchError]) -> Table:
+    table = _table(f"Fetch errors (values shown as '{UNKNOWN}' are unknown, not zero)",
+                   "NAMESPACE")
+    table.add_column("METRIC")
+    table.add_column("REASON", style="red")
+
+    for e in sorted(errors, key=lambda e: (e.namespace, e.metric)):
+        table.add_row(e.namespace, e.metric, e.reason)
 
     return table

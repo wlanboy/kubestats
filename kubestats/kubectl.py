@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterable
+from functools import partial
 from typing import Any, cast
 
 from kubernetes import client, config
@@ -37,10 +38,11 @@ def _reason(e: ApiException) -> str:
     return f"{e.status} {e.reason}".strip()
 
 
-def _collect[T](errors: dict[str, str], metric: str, fn: Callable[[], T]) -> T | None:
-    """Run fn; on an API error record the reason under `metric` and return None."""
+def _collect[**P, T](errors: dict[str, str], metric: str, fn: Callable[P, T],
+                     *args: P.args, **kwargs: P.kwargs) -> T | None:
+    """Call fn; on an API error record the reason under `metric` and return None."""
     try:
-        return fn()
+        return fn(*args, **kwargs)
     except _FetchError as e:
         errors[metric] = str(e)
     except ApiException as e:
@@ -119,6 +121,18 @@ def _storage_version(crd) -> str:
     return crd.spec.versions[0].name if crd.spec.versions else "v1"
 
 
+def _record_crd_count(stat: CRDStat, key: str, list_fn: Callable[[], Any]) -> None:
+    """Store the instance count under `key`; 404 counts as zero, other errors as unknown."""
+    try:
+        count = len(cast(dict[str, Any], list_fn()).get("items", []))
+    except ApiException as e:
+        if e.status != 404:
+            stat.fetch_errors[key] = _reason(e)
+        return
+    if count:
+        stat.instances_by_namespace[key] = count
+
+
 def get_crd_stats(
     namespace_names: list[str],
     *,
@@ -153,24 +167,16 @@ def get_crd_stats(
             namespaced=spec.scope == "Namespaced",
         )
 
-        def record(key: str, list_fn: Callable[[], Any]) -> None:
-            try:
-                count = len(cast(dict[str, Any], list_fn()).get("items", []))
-            except ApiException as e:
-                if e.status != 404:
-                    stat.fetch_errors[key] = _reason(e)
-                return
-            if count:
-                stat.instances_by_namespace[key] = count
-
         if stat.namespaced:
             for ns in namespace_names:
-                record(ns, lambda ns=ns: custom.list_namespaced_custom_object(
+                _record_crd_count(stat, ns, partial(
+                    custom.list_namespaced_custom_object,
                     group=spec.group, version=version,
                     namespace=ns, plural=spec.names.plural,
                 ))
         else:
-            record("(cluster)", lambda: custom.list_cluster_custom_object(
+            _record_crd_count(stat, "(cluster)", partial(
+                custom.list_cluster_custom_object,
                 group=spec.group, version=version, plural=spec.names.plural,
             ))
 
@@ -212,9 +218,19 @@ def _list_custom(custom: client.CustomObjectsApi, gvr: GVR,
     return None
 
 
-def _count_custom(custom: client.CustomObjectsApi, gvr: GVR, namespace: str) -> int:
-    """Instance count; 0 if the resource type is not installed. Raises _FetchError."""
-    return len(_list_custom(custom, gvr, namespace) or [])
+def _items_custom(custom: client.CustomObjectsApi, gvr: GVR,
+                  namespace: str) -> list[dict[str, Any]]:
+    """Items; empty if the resource type is not installed. Raises _FetchError."""
+    return _list_custom(custom, gvr, namespace) or []
+
+
+def _count_custom(custom: client.CustomObjectsApi, namespace: str, *gvrs: GVR) -> int:
+    """Summed instance count; 0 for types not installed. Raises _FetchError."""
+    return sum(len(_items_custom(custom, gvr, namespace)) for gvr in gvrs)
+
+
+def _count_items(list_fn: Callable[..., Any], **kwargs: Any) -> int:
+    return len(cast(Any, list_fn(**kwargs)).items)
 
 
 _DEFAULT_PROBE_IGNORE: frozenset[str] = frozenset({"istio-proxy"})
@@ -291,28 +307,26 @@ def get_adoption_stats(
 
             errors: dict[str, str] = {}
 
-            pdb_count = _collect(errors, "pdb_count", lambda: len(cast(Any,
-                policy.list_namespaced_pod_disruption_budget(namespace=ns)
-            ).items))
+            pdb_count = _collect(errors, "pdb_count", _count_items,
+                                 policy.list_namespaced_pod_disruption_budget, namespace=ns)
 
             hpas: list[Any] = cast(Any, autoscaling.list_namespaced_horizontal_pod_autoscaler(namespace=ns)).items
             hpa_targets = {h.spec.scale_target_ref.name for h in hpas}
             hpa_count = len(hpa_targets & deployment_names)
 
-            def count(metric: str, *gvrs: GVR) -> int | None:
-                return _collect(errors, metric, lambda: sum(
-                    _count_custom(custom, gvr, ns) for gvr in gvrs  # noqa: B023 - called immediately
-                ))
-
-            vpa_count = count("vpa_count", _VPA)
-            flux_count = count("flux_resources", _HELM_RELEASES, _KUSTOMIZATIONS)
-            argocd_count = count("argocd_resources", _ARGOCD_APPLICATIONS)
+            vpa_count = _collect(errors, "vpa_count", _count_custom, custom, ns, _VPA)
+            flux_count = _collect(errors, "flux_resources", _count_custom,
+                                  custom, ns, _HELM_RELEASES, _KUSTOMIZATIONS)
+            argocd_count = _collect(errors, "argocd_resources", _count_custom,
+                                    custom, ns, _ARGOCD_APPLICATIONS)
 
             route_count: int | None = 0
             dc_count: int | None = 0
             if _backend == CliTool.oc:
-                route_count = count("route_count", _OC_ROUTES)
-                dc_count = count("deploymentconfig_count", _OC_DEPLOYMENTCONFIGS)
+                route_count = _collect(errors, "route_count", _count_custom,
+                                       custom, ns, _OC_ROUTES)
+                dc_count = _collect(errors, "deploymentconfig_count", _count_custom,
+                                    custom, ns, _OC_DEPLOYMENTCONFIGS)
 
             stats.append(AdoptionStat(
                 namespace=ns,
@@ -351,6 +365,16 @@ _ISTIO_API_VERSIONS = ("v1", "v1beta1", "v1alpha3")
 _PEER_AUTHENTICATIONS = GVR("security.istio.io", ("v1", "v1beta1"), "peerauthentications")
 _SERVICE_ENTRIES = GVR("networking.istio.io", _ISTIO_API_VERSIONS, "serviceentries")
 DEFAULT_MESH_ROOT_NAMESPACE = "istio-system"
+
+# IstioNamespaceStat field -> resource counted for it
+_ISTIO_COUNTED: dict[str, GVR] = {
+    "virtual_services": GVR("networking.istio.io", _ISTIO_API_VERSIONS, "virtualservices"),
+    "destination_rules": GVR("networking.istio.io", _ISTIO_API_VERSIONS, "destinationrules"),
+    "gateways": GVR("networking.istio.io", _ISTIO_API_VERSIONS, "gateways"),
+    "service_entries": _SERVICE_ENTRIES,
+    "workload_entries": GVR("networking.istio.io", _ISTIO_API_VERSIONS, "workloadentries"),
+    "authorization_policies": GVR("security.istio.io", _ISTIO_API_VERSIONS, "authorizationpolicies"),
+}
 
 
 def _injection_mode(labels: dict[str, str]) -> str:
@@ -429,12 +453,13 @@ def get_istio_stats(
 
         errors: dict[str, str] = {}
 
-        def count(metric: str, group: str, plural: str) -> int | None:
-            gvr = GVR(group, _ISTIO_API_VERSIONS, plural)
-            return _collect(errors, metric, lambda: _count_custom(custom, gvr, ns))  # noqa: B023
+        counts = {
+            metric: _collect(errors, metric, _count_custom, custom, ns, gvr)
+            for metric, gvr in _ISTIO_COUNTED.items()
+        }
 
-        peer_auths = _collect(errors, "peer_authentications",
-                              lambda: _list_custom(custom, _PEER_AUTHENTICATIONS, ns) or [])  # noqa: B023
+        peer_auths = _collect(errors, "peer_authentications", _items_custom,
+                              custom, _PEER_AUTHENTICATIONS, ns)
         mtls_mode: str | None = None
         if peer_auths is not None:
             if _namespace_wide_mtls(peer_auths) is None and mesh_error:
@@ -448,19 +473,13 @@ def get_istio_stats(
             pod_count=len(pods),
             sidecar_count=sidecar_count,
             ambient_count=ambient_count,
-            virtual_services=count(
-                "virtual_services", "networking.istio.io", "virtualservices"),
-            destination_rules=count(
-                "destination_rules", "networking.istio.io", "destinationrules"),
-            gateways=count(
-                "gateways", "networking.istio.io", "gateways"),
-            service_entries=count(
-                "service_entries", "networking.istio.io", "serviceentries"),
-            workload_entries=count(
-                "workload_entries", "networking.istio.io", "workloadentries"),
+            virtual_services=counts["virtual_services"],
+            destination_rules=counts["destination_rules"],
+            gateways=counts["gateways"],
+            service_entries=counts["service_entries"],
+            workload_entries=counts["workload_entries"],
             peer_authentications=None if peer_auths is None else len(peer_auths),
-            authorization_policies=count(
-                "authorization_policies", "security.istio.io", "authorizationpolicies"),
+            authorization_policies=counts["authorization_policies"],
             mtls_mode=mtls_mode,
             fetch_errors=errors,
         ))

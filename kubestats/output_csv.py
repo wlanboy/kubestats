@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import csv
 import io
-from dataclasses import asdict
 
 from .models import AdoptionStat, CRDStat, IstioNamespaceStat, ServiceEntryStat
 
@@ -16,16 +15,21 @@ def _buf(fields: list[str]) -> tuple[io.StringIO, csv.DictWriter]:
 
 
 def _rows(stats: list, fields: list[str]) -> str:
-    """Render dataclass instances as CSV, projected onto `fields` (extra fields ignored)."""
+    """Render objects as CSV, one attribute per field.
+
+    Values that could not be fetched are None and become empty cells, so they
+    cannot be mistaken for a real 0.
+    """
     buf, writer = _buf(fields)
     for s in stats:
-        writer.writerow(asdict(s))
+        writer.writerow({f: getattr(s, f) for f in fields})
     return buf.getvalue()
 
 
 def render_crds(stats: list[CRDStat], total_namespaces: int) -> str:
     fields = ["name", "group", "kind", "plural", "namespaced",
-              "namespace_count", "total_namespaces", "total_instances", "adoption_pct"]
+              "namespace_count", "total_namespaces", "total_instances", "adoption_pct",
+              "fetch_errors"]
     buf, writer = _buf(fields)
     for s in stats:
         writer.writerow({
@@ -38,6 +42,9 @@ def render_crds(stats: list[CRDStat], total_namespaces: int) -> str:
             "total_namespaces": total_namespaces,
             "total_instances": s.total_instances,
             "adoption_pct": s.adoption_pct(total_namespaces),
+            # namespaces whose count is unknown; the totals are lower bounds then
+            "fetch_errors": "; ".join(
+                f"{ns}: {reason}" for ns, reason in sorted(s.fetch_errors.items())),
         })
     return buf.getvalue()
 
@@ -55,7 +62,8 @@ def render_adoption(stats: list[AdoptionStat]) -> str:
 
 def render_istio(stats: list[IstioNamespaceStat]) -> str:
     return _rows(stats, [
-        "namespace", "injection_enabled", "pod_count", "sidecar_count",
+        "namespace", "injection_enabled", "injection_mode",
+        "pod_count", "sidecar_count", "ambient_count",
         "virtual_services", "destination_rules", "gateways",
         "service_entries", "workload_entries",
         "peer_authentications", "authorization_policies", "mtls_mode",
